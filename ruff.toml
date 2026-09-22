@@ -1,0 +1,5 @@
+# Shared Ruff configuration for direct CLI usage and editors.
+extend-exclude = ["examples", "lib", "docs"]
+
+# Also ignore excluded paths if they are passed explicitly on the command line.
+force-exclude = true

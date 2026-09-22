@@ -1,0 +1,181 @@
+#+TITLE: photo-tagger
+#+AUTHOR: Andrey Pudov
+#+OPTIONS: toc:t
+
+* Overview
+photo-tagger is a small command line utility that writes the metadata a photograph needs before it is published.
+It sends each image to an OpenAI vision model and collects a title, a description and a keyword list into a single JSON file.
+
+The same photograph is described differently depending on where it goes, so the tool writes for a chosen target: a microstock listing that has to be found through search, or a gallery wall label that has to be read in front of the print.
+
+* Features
+- Titles, descriptions and keywords generated from the image itself
+- Two writing targets: =stock= for microstock marketplaces, =gallery= for museum and exhibition labels
+- Batch processing of files or whole directories into one JSON document, optionally with concurrent requests
+- Any vision capable OpenAI model, chosen per run or through an environment variable
+- EXIF context (camera, lens, exposure, coordinates) forwarded to the model
+- Structured JSON responses validated and normalized against the target limits
+- A failing photo never aborts the run; its error is recorded alongside the results
+
+* Installation
+Clone the repository:
+
+#+begin_src bash
+git clone https://github.com/andreypudov/photo-tagger.git
+cd photo-tagger
+#+end_src
+
+Create and activate a virtual environment:
+
+#+begin_src bash
+python3 -m venv .venv
+source .venv/bin/activate
+#+end_src
+
+Upgrade pip:
+
+#+begin_src bash
+python -m pip install --upgrade pip
+#+end_src
+
+Install dependencies:
+
+#+begin_src bash
+pip install -r requirements.txt
+#+end_src
+
+Install pre-commit hooks:
+
+#+begin_src bash
+pre-commit install
+#+end_src
+
+Export an OpenAI API key:
+
+#+begin_src bash
+export OPENAI_API_KEY=sk-...
+#+end_src
+
+Optionally pick a default model other than =gpt-4.1-mini=:
+
+#+begin_src bash
+export PHOTO_TAGGER_MODEL=gpt-4.1
+#+end_src
+
+* Usage
+Tag a single photo for microstock:
+
+#+begin_src bash
+python photo_tagger.py photo.jpg
+#+end_src
+
+Tag several photos as exhibition wall labels:
+
+#+begin_src bash
+python photo_tagger.py --target gallery portrait.jpg landscape.tif -o labels.json
+#+end_src
+
+Tag a whole shoot folder and print the result instead of writing a file:
+
+#+begin_src bash
+python photo_tagger.py --target stock ./shoot -o -
+#+end_src
+
+Tag a large shoot four photos at a time with a different model:
+
+#+begin_src bash
+python photo_tagger.py --model gpt-4.1 --jobs 4 ./shoot -o stock.json
+#+end_src
+
+** Options
+| Option            | Description                                                                           |
+|-------------------+---------------------------------------------------------------------------------------|
+| =-t=, =--target=  | =stock= or =gallery= (default: =stock=)                                               |
+| =-o=, =--output=  | JSON file to write, or =-= for standard output (default: =tags.json=)                 |
+| =-m=, =--model=   | Vision capable OpenAI model, overrides =PHOTO_TAGGER_MODEL= (default: =gpt-4.1-mini=) |
+| =--detail=        | Image detail sent to the model: =low=, =high= or =auto= (default: =high=)             |
+| =-j=, =--jobs=    | Number of photos processed concurrently (default: =1=)                                |
+| =--api-key=       | API key, overrides =OPENAI_API_KEY=                                                   |
+| =--max-dimension= | Longest edge of the image sent to the model (default: =1024=)                         |
+| =--no-exif=       | Do not read EXIF metadata from the photos                                             |
+| =--timeout=       | Per request timeout in seconds (default: =60=)                                        |
+| =--retries=       | Automatic retries on transient API failures (default: =3=)                            |
+| =--indent=        | Indentation of the generated JSON (default: =2=)                                      |
+| =-q=, =--quiet=   | Do not print progress information                                                     |
+
+The model has to accept image input and structured JSON output.
+=--detail low= is considerably cheaper and faster, at the cost of fine detail such as small text or distant subjects.
+Raise =--jobs= to speed up large batches; requests that hit the account rate limit are retried automatically.
+
+Exit codes: =0= when every photo was tagged, =1= when at least one photo failed or the API was unreachable, =2= on invalid arguments or unreadable files, =130= on interrupt.
+A rejected API key or an unknown model stops the run at the first photo instead of failing every photo in turn.
+
+* Targets
+** stock
+Written for buyers who arrive through a search box.
+Titles are literal and name the subject, the action and the setting; descriptions add the context that helps judge usage; keywords are lower case, ordered by relevance, and capped at 49 entries.
+
+** gallery
+Written the way a photograph is presented on display in a museum or an exhibition.
+The title is an artwork title rather than a search phrase, and the description is a curatorial wall text of two or three sentences: what the viewer sees, how the work is composed and lit, and the reading it invites.
+Keywords stay curatorial, covering genre, motif and formal qualities.
+
+* Output Format
+The tool writes one JSON document per run:
+
+#+begin_src json
+{
+  "target": "gallery",
+  "model": "gpt-4.1-mini",
+  "generated_at": "2026-09-22T08:16:41+00:00",
+  "photos": [
+    {
+      "file": "samples/lighthouse.jpg",
+      "filename": "lighthouse.jpg",
+      "title": "Keeper of the Morning Tide",
+      "description": "A lighthouse holds the edge of a granite headland ...",
+      "keywords": ["seascape", "solitude", "morning light"]
+    }
+  ]
+}
+#+end_src
+
+An =errors= array is added when a photo could not be tagged, listing the file and the reason.
+=samples/tags.stock.json= and =samples/tags.gallery.json= are illustrative documents showing the shape of both targets.
+
+* Useful Scripts
+- =scripts/photo_resize.sh= downscales a folder of photos into a working directory before tagging.
+- =scripts/photo_embed_metadata.sh= writes a generated JSON document back into the photo files as IPTC, XMP and EXIF tags using =exiftool=.
+
+* How It Works
+The program:
+1. Expands the given files and directories into a stable list of photos.
+2. Decodes each image, reads a small subset of its EXIF data, rotates it upright according to its EXIF orientation and encodes a downscaled JPEG as a data URL.
+3. Builds a target specific system prompt and asks the model for a strict JSON response.
+4. Rejects refusals and truncated responses, then normalizes the result: whitespace collapsed, titles and descriptions truncated to the target limits, keywords lower cased, deduplicated and capped.
+5. Collects every photo into one document and writes it to disk.
+
+Only the downscaled copy is sent to the API; the original files are never modified.
+
+* Development
+Run the tests:
+
+#+begin_src bash
+python -m unittest discover -s tests
+#+end_src
+
+Run the linter and the formatter:
+
+#+begin_src bash
+ruff check .
+ruff format .
+#+end_src
+
+Run every pre-commit hook against the whole tree:
+
+#+begin_src bash
+pre-commit run --all-files
+#+end_src
+
+* License
+Apache License 2.0. See =LICENSE=.

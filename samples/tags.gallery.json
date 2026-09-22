@@ -1,0 +1,27 @@
+{
+  "target": "gallery",
+  "model": "gpt-4.1-mini",
+  "generated_at": "2026-09-22T08:16:41+00:00",
+  "photos": [
+    {
+      "file": "samples/lighthouse.jpg",
+      "filename": "lighthouse.jpg",
+      "title": "Keeper of the Morning Tide",
+      "description": "A lighthouse holds the edge of a granite headland while the first light of day moves across the rock. The composition sets the vertical of the tower against a long, unbroken horizon, and the low sun renders the stone in warm, granular detail. Held between land and open water, the image dwells on the quiet labour of keeping watch, and on the thin margin that separates shelter from the sea.",
+      "keywords": [
+        "seascape",
+        "coastal landscape",
+        "lighthouse",
+        "solitude",
+        "vigilance",
+        "morning light",
+        "horizon line",
+        "granite",
+        "maritime heritage",
+        "romanticism",
+        "natural light",
+        "verticality"
+      ]
+    }
+  ]
+}

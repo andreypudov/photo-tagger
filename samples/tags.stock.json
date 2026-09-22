@@ -1,0 +1,45 @@
+{
+  "target": "stock",
+  "model": "gpt-4.1-mini",
+  "generated_at": "2026-09-22T08:14:03+00:00",
+  "photos": [
+    {
+      "file": "samples/lighthouse.jpg",
+      "filename": "lighthouse.jpg",
+      "title": "Lighthouse on rocky coastline at sunrise with calm sea",
+      "description": "A white lighthouse stands on a rocky headland above a calm sea at sunrise. Warm golden light rakes across the stone while mist softens the horizon, leaving open copy space in the sky.",
+      "keywords": [
+        "lighthouse",
+        "coastline",
+        "sunrise",
+        "rocky shore",
+        "sea",
+        "ocean",
+        "navigation",
+        "maritime",
+        "beacon",
+        "tower",
+        "coastal landscape",
+        "morning light",
+        "golden hour",
+        "calm water",
+        "horizon",
+        "mist",
+        "seascape",
+        "nautical",
+        "safety",
+        "guidance",
+        "solitude",
+        "travel",
+        "tourism",
+        "scenic",
+        "nature",
+        "copy space",
+        "landscape orientation",
+        "blue sky",
+        "atlantic",
+        "shoreline"
+      ]
+    }
+  ]
+}
