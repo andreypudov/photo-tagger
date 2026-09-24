@@ -1,23 +1,26 @@
-from .categories import CategorySet
+from .categories import (
+    CATEGORIES,
+    CATEGORY_IDS,
+    CATEGORY_RULES,
+    PRIMARY_FIELD,
+    SECONDARY_FIELD,
+)
 from .image_loader import Photo
 from .targets import TargetProfile
 
 SCHEMA_NAME = "photo_metadata"
-
 
 SPECIFIC_PLACE_FIELD = "specific_place"
 
 
 def build_system_prompt(
     profile: TargetProfile,
-    category_sets: tuple[CategorySet, ...] = (),
     location: str | None = None,
 ) -> str:
     """Build the system prompt that defines the voice for a target.
 
     Args:
         profile: Target profile describing the destination
-        category_sets: Category lists the model has to choose from
         location: Place where the whole photo set was taken, if known
 
     Returns:
@@ -42,22 +45,35 @@ def build_system_prompt(
         "- Write in English."
     )
 
-    for category_set in category_sets:
-        choices = "\n".join(
-            f"{code}. {name}" for code, name in category_set.choices.items()
-        )
-        prompt += (
-            "\n\n"
-            f"Choose the single {category_set.label} category that best matches "
-            "the main subject of the photograph and return its number in "
-            f"{category_set.field}:\n"
-            f"{choices}"
-        )
+    prompt += "\n\n" + build_category_rules()
 
     if location:
         prompt += "\n\n" + build_location_rules(location)
 
     return prompt
+
+
+def build_category_rules() -> str:
+    """Build the prompt section listing the categories to choose from.
+
+    Returns:
+        The prompt text
+    """
+    choices = "\n".join(
+        f"- {category.id}: {category.description}" for category in CATEGORIES
+    )
+    rules = "\n".join(f"- {rule}" for rule in CATEGORY_RULES)
+
+    return (
+        "Categories:\n"
+        f"Set {PRIMARY_FIELD} to the category of the main subject. Set "
+        f"{SECONDARY_FIELD} to a second category only when it clearly applies "
+        "as well, otherwise to null; it never repeats the primary one.\n"
+        f"{choices}\n"
+        "\n"
+        "When a photograph fits more than one category:\n"
+        f"{rules}"
+    )
 
 
 def build_location_rules(location: str) -> str:
@@ -94,7 +110,6 @@ def build_location_rules(location: str) -> str:
 def build_user_prompt(
     photo: Photo,
     profile: TargetProfile,
-    category_sets: tuple[CategorySet, ...] = (),
     location: str | None = None,
 ) -> str:
     """Build the per-photo instruction sent alongside the image.
@@ -102,15 +117,12 @@ def build_user_prompt(
     Args:
         photo: The prepared photo
         profile: Target profile describing the destination
-        category_sets: Category lists the model has to choose from
         location: Place where the whole photo set was taken, if known
 
     Returns:
         The user prompt text
     """
-    fields = ["a title", "a description", "keywords"]
-    if category_sets:
-        fields.append("categories")
+    fields = ["a title", "a description", "keywords", "categories"]
     if location:
         fields.append("the specific place")
     requested = ", ".join(fields[:-1]) + " and " + fields[-1]
@@ -149,14 +161,12 @@ def describe_orientation(width: int, height: int) -> str | None:
 
 def build_response_schema(
     profile: TargetProfile,
-    category_sets: tuple[CategorySet, ...] = (),
     location: str | None = None,
 ) -> dict:
     """Build the strict JSON schema requested from the model.
 
     Args:
         profile: Target profile describing the destination
-        category_sets: Category lists the model has to choose from
         location: Place where the whole photo set was taken, if known
 
     Returns:
@@ -181,19 +191,18 @@ def build_response_schema(
             ),
             "items": {"type": "string"},
         },
+        PRIMARY_FIELD: {
+            "type": "string",
+            "description": "Category of the main subject",
+            "enum": list(CATEGORY_IDS),
+        },
+        SECONDARY_FIELD: {
+            "type": ["string", "null"],
+            "description": "Second category that clearly applies too, or null",
+            "enum": [*CATEGORY_IDS, None],
+        },
     }
-    required = ["title", "description", "keywords"]
-
-    for category_set in category_sets:
-        properties[category_set.field] = {
-            "type": "integer",
-            "description": (
-                f"Number of the {category_set.label} category that best "
-                "matches the photo"
-            ),
-            "enum": list(category_set.choices),
-        }
-        required.append(category_set.field)
+    required = ["title", "description", "keywords", PRIMARY_FIELD, SECONDARY_FIELD]
 
     if location:
         properties[SPECIFIC_PLACE_FIELD] = {

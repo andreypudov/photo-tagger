@@ -78,17 +78,17 @@ def collect_warnings(document: dict, export_format) -> list[str]:
             f"{len(failed)} photo(s) failed tagging and are not in the document"
         )
 
-    category_set = export_format.category_set
-    if category_set is not None:
+    if export_format.category_map is not None:
         uncategorized = [
             photo["filename"]
             for photo in document["photos"]
-            if find_category(photo, category_set) is None
+            if find_category(photo) is None
         ]
         if uncategorized:
             warnings.append(
-                f"{len(uncategorized)} photo(s) have no {category_set.label} "
-                f"category, the column is left empty: {', '.join(uncategorized)}"
+                f"{len(uncategorized)} photo(s) have no category, the "
+                f"{export_format.name} category is left empty: "
+                f"{', '.join(uncategorized)}"
             )
 
     return warnings

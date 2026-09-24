@@ -4,10 +4,67 @@ import json
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from .categories import ADOBE_STOCK_CATEGORIES, CategorySet
+from .categories import CATEGORY_IDS
 from .metadata import normalize_keywords, truncate_text
 
 ADOBE_STOCK = "adobe-stock"
+
+ADOBE_STOCK_CATEGORIES = {
+    1: "Animals",
+    2: "Buildings and Architecture",
+    3: "Business",
+    4: "Drinks",
+    5: "The Environment",
+    6: "States of Mind",
+    7: "Food",
+    8: "Graphic Resources",
+    9: "Hobbies and Leisure",
+    10: "Industry",
+    11: "Landscapes",
+    12: "Lifestyle",
+    13: "People",
+    14: "Plants and Flowers",
+    15: "Culture and Religion",
+    16: "Science",
+    17: "Social Issues",
+    18: "Sports",
+    19: "Technology",
+    20: "Transport",
+    21: "Travel",
+}
+
+# Every photo-tagger category maps to exactly one Adobe Stock category code.
+ADOBE_STOCK_CATEGORY_MAP = {
+    "wildlife": 1,
+    "pets": 1,
+    "landmark": 2,
+    "architecture": 2,
+    "interior": 2,
+    "cityscape": 2,
+    "landscape": 11,
+    "seascape": 11,
+    "sky_weather": 11,
+    "environment": 5,
+    "plants_flowers": 14,
+    "food": 7,
+    "drinks": 4,
+    "people": 13,
+    "lifestyle": 12,
+    "business": 3,
+    "industry": 10,
+    "agriculture": 10,
+    "technology": 19,
+    "science_health": 16,
+    "sports": 18,
+    "hobbies": 9,
+    "travel": 21,
+    "transport": 20,
+    "culture_religion": 15,
+    "celebrations": 15,
+    "social_issues": 17,
+    "emotions_concepts": 6,
+    "backgrounds_textures": 8,
+}
 
 ADOBE_STOCK_COLUMNS = ("Filename", "Title", "Keywords", "Category", "Releases")
 ADOBE_STOCK_TITLE_MAX_CHARS = 200
@@ -25,8 +82,8 @@ class ExportFormat:
         summary: Short human readable description of the format
         extension: File extension of the default output file
         render: Callable turning the list of photos into the file contents
-        category_set: Category list the format reads from each photo, None
-            when the format has no category column
+        category_map: Code of the destination category for every
+            photo-tagger category, None when the format has no category
         unique_filenames: Whether the destination matches entries to files
             by file name alone, so two photos may not share one
     """
@@ -35,7 +92,7 @@ class ExportFormat:
     summary: str
     extension: str
     render: Callable[[list[dict]], str]
-    category_set: CategorySet | None = None
+    category_map: dict[str, int] | None = None
     unique_filenames: bool = False
 
 
@@ -79,21 +136,14 @@ def load_document(path: str) -> dict:
     return document
 
 
-def find_category(photo: dict, category_set: CategorySet) -> int | None:
-    """Return the photo's category code from a set, or None when absent."""
-    categories = photo.get("categories")
-    if not isinstance(categories, dict):
+def find_category(photo: dict) -> str | None:
+    """Return the photo's primary category id, or None when absent."""
+    category = photo.get("category")
+    if not isinstance(category, dict):
         return None
 
-    category = categories.get(category_set.name)
-    # bool is an int subclass and 11.0 == 11, so check the type as well.
-    if (
-        not isinstance(category, int)
-        or isinstance(category, bool)
-        or category not in category_set.choices
-    ):
-        return None
-    return category
+    primary = category.get("primary")
+    return primary if primary in CATEGORY_IDS else None
 
 
 def find_duplicate_filenames(photos: list[dict]) -> list[str]:
@@ -128,13 +178,13 @@ def build_adobe_stock_row(photo: dict) -> dict:
         ],
         ADOBE_STOCK_MAX_KEYWORDS,
     )
-    category = find_category(photo, ADOBE_STOCK_CATEGORIES)
+    category = find_category(photo)
 
     return {
         "Filename": photo["filename"],
         "Title": truncate_text(photo["title"], ADOBE_STOCK_TITLE_MAX_CHARS),
         "Keywords": ", ".join(keywords),
-        "Category": "" if category is None else category,
+        "Category": ADOBE_STOCK_CATEGORY_MAP.get(category, ""),
         "Releases": "",
     }
 
@@ -162,7 +212,7 @@ FORMATS = {
         summary="Adobe Stock metadata upload CSV",
         extension=".csv",
         render=render_adobe_stock_csv,
-        category_set=ADOBE_STOCK_CATEGORIES,
+        category_map=ADOBE_STOCK_CATEGORY_MAP,
         unique_filenames=True,
     ),
 }

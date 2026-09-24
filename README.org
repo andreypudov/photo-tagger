@@ -4,8 +4,8 @@
 
 * Overview
 photo-tagger is a small command line utility that writes the metadata a photograph needs before it is published.
-It sends each image to an OpenAI vision model and collects a title, a description, a keyword list and the categories destinations sort photos into, all in a single JSON file.
-A second script, =photo_export.py=, converts that JSON file into the upload files destinations expect, such as the Adobe Stock CSV, without calling the API again.
+It sends each image to an OpenAI vision model and collects a title, a description, a keyword list and a category into a single JSON file.
+A second script, =tags_export.py=, converts that JSON file into the upload files destinations expect, such as the Adobe Stock CSV, without calling the API again.
 
 The same photograph is described differently depending on where it goes, so the tool writes for a chosen target: a microstock listing that has to be found through search, or a gallery wall label that has to be read in front of the print.
 
@@ -13,7 +13,7 @@ The same photograph is described differently depending on where it goes, so the 
 - Titles, descriptions and keywords generated from the image itself
 - Two writing targets: =stock= for microstock marketplaces, =gallery= for museum and exhibition labels
 - Batch processing of files or whole directories into one JSON document, optionally with concurrent requests
-- Adobe Stock category chosen for every photo and stored alongside the text
+- A category for every photo from photo-tagger's own list, mapped to each stock site's categories on export
 - Album location that the model uses in titles and keywords, refined to a recognizable landmark or site when it is certain, or an explicit =--no-location= for studio and product work
 - Export of a JSON document into destination specific files, currently the Adobe Stock metadata CSV, as often as needed without new API calls
 - Any vision capable OpenAI model, chosen per run or through an environment variable
@@ -68,7 +68,7 @@ export PHOTO_TAGGER_MODEL=gpt-4.1
 
 * Usage
 Tagging and export are two steps.
-=photo_tagger.py= sends the photos to the API once and writes everything into a JSON document; =photo_export.py= turns that document into as many destination files as needed, without calling the API again.
+=photo_tagger.py= sends the photos to the API once and writes everything into a JSON document; =tags_export.py= turns that document into as many destination files as needed, without calling the API again.
 
 Tag an album shot in one place for microstock, so that titles and keywords can name it:
 
@@ -79,7 +79,7 @@ python photo_tagger.py -t stock -l "Madeira, Portugal" -o madeira.json ./madeira
 Convert the result into an Adobe Stock metadata CSV:
 
 #+begin_src bash
-python photo_export.py -f adobe-stock -o madeira.csv madeira.json
+python tags_export.py -f adobe-stock -o madeira.csv madeira.json
 #+end_src
 
 Tag studio photos, which have no meaningful location, as exhibition wall labels:
@@ -140,7 +140,7 @@ Exit codes: =0= when every photo was tagged, =1= when at least one photo failed 
 A rejected API key or an unknown model stops the run at the first photo instead of failing every photo in turn.
 
 ** Export Options
-=python photo_export.py -f FORMAT -o PATH [options] TAGS_JSON=
+=python tags_export.py -f FORMAT -o PATH [options] TAGS_JSON=
 
 *** Required
 | Option           | Description                                                             |
@@ -184,16 +184,68 @@ The tool writes one JSON document per run:
       "title": "Keeper of the Morning Tide",
       "description": "A lighthouse stands on a granite headland as the first morning light reaches the rock.",
       "keywords": ["seascape", "solitude", "morning light", "cornwall", "england"],
-      "categories": {"adobe_stock": 11},
+      "category": {"primary": "landmark", "secondary": "seascape"},
       "location": {"given": "Cornwall, England", "detected": "Godrevy Lighthouse"}
     }
   ]
 }
 #+end_src
 
-=categories= holds the code the model chose from each destination's category list; =adobe_stock= is one of the 21 Adobe Stock categories.
+=category= holds the =primary= category of the photo and an optional =secondary= one, or =null=, both from the list in [[*Categories][Categories]].
 =location= is present only when =--location= was given: =given= is the value passed on the command line, =detected= the more specific place the model recognized in the photo, or =null=.
 An =errors= array is added when a photo could not be tagged, listing the file and the reason.
+
+* Categories
+Every stock site has its own category list, and the lists do not line up.
+photo-tagger therefore uses one list of its own that is at least as fine-grained as every site's list: each of its categories maps to exactly one category of each site.
+The model picks from this list once, and every export format translates the choice into its site's category.
+A new site only needs a new mapping, so documents that were already tagged export to it without calling the API again.
+
+The model sets =primary= to the category of the main subject and =secondary= to a second category only when it clearly applies as well.
+Export formats use =primary=; =secondary= is kept for sites that accept a second category.
+
+| Category               | Covers                                                         | Adobe Stock                  |
+|------------------------+----------------------------------------------------------------+------------------------------|
+| =wildlife=             | Wild animals, birds, insects and marine life                   | 1 Animals                    |
+| =pets=                 | Dogs, cats and other domestic or farm animals                  | 1 Animals                    |
+| =landmark=             | Famous buildings, monuments and sights                         | 2 Buildings and Architecture |
+| =architecture=         | Building exteriors and architectural details                   | 2 Buildings and Architecture |
+| =interior=             | Rooms and interior design                                      | 2 Buildings and Architecture |
+| =cityscape=            | Skylines, streets and urban views                              | 2 Buildings and Architecture |
+| =landscape=            | Mountains, fields, countryside, lakes and rivers               | 11 Landscapes                |
+| =seascape=             | Coasts, beaches and the sea                                    | 11 Landscapes                |
+| =sky_weather=          | Sky, clouds, sunsets, sunrises and weather                     | 11 Landscapes                |
+| =environment=          | Ecology, pollution, climate change and renewable energy        | 5 The Environment            |
+| =plants_flowers=       | Plants, flowers and trees as the subject                       | 14 Plants and Flowers        |
+| =food=                 | Dishes, ingredients and cooking                                | 7 Food                       |
+| =drinks=               | Beverages such as coffee, tea, wine and cocktails              | 4 Drinks                     |
+| =people=               | Portraits and people as the subject                            | 13 People                    |
+| =lifestyle=            | Everyday life, home, family and leisure scenes                 | 12 Lifestyle                 |
+| =business=             | Office, work, finance and commerce                             | 3 Business                   |
+| =industry=             | Factories, construction, mining and power plants               | 10 Industry                  |
+| =agriculture=          | Farming, crops, orchards and harvest                           | 10 Industry                  |
+| =technology=           | Devices, computers, electronics and digital life               | 19 Technology                |
+| =science_health=       | Science, medicine, laboratories and healthcare                 | 16 Science                   |
+| =sports=               | Sports, fitness and athletes                                   | 18 Sports                    |
+| =hobbies=              | Crafts, music, games and outdoor recreation                    | 9 Hobbies and Leisure        |
+| =travel=               | Tourism, travellers, luggage and sightseeing                   | 21 Travel                    |
+| =transport=            | Vehicles, roads, trains, boats and aircraft                    | 20 Transport                 |
+| =culture_religion=     | Traditions, religion, rituals, art and heritage                | 15 Culture and Religion      |
+| =celebrations=         | Holidays, parties, festivals and events                        | 15 Culture and Religion      |
+| =social_issues=        | Poverty, protest, inequality and other issues                  | 17 Social Issues             |
+| =emotions_concepts=    | Moods, feelings and abstract ideas as the subject              | 6 States of Mind             |
+| =backgrounds_textures= | Textures, patterns, abstract images and copy space backgrounds | 8 Graphic Resources          |
+
+When a photo fits more than one category, the model follows these rules, so that similar photos of an album end up in the same category:
+- A recognizable landmark is =landmark=, even when it is also architecture or a travel subject.
+- =people= when a person is the subject, =lifestyle= when the activity or scene matters more than who is in it.
+- =travel= only when tourism itself is shown, such as travellers, luggage or sightseeing; a place on its own is =landscape=, =cityscape= or =landmark=.
+- Religious buildings are =landmark= or =architecture=; =culture_religion= is for ceremonies, rituals, traditions and art.
+- =backgrounds_textures= when there is no distinct subject.
+- =emotions_concepts= only when a feeling or an idea is clearly the point of the photograph.
+
+The list lives in =tagger/categories.py= and each site's mapping in =tagger/export.py=.
+Splitting a category later means that the photos in it have to be tagged again, so it is worth keeping the list fine-grained.
 
 * Location
 Photos are usually tagged one album at a time, and an album is usually shot in one place: a city, an island or a single site.
@@ -229,12 +281,12 @@ lighthouse.jpg,Lighthouse on rocky coastline at sunrise with calm sea,"lighthous
 | Filename | File name of the photo, including the extension             |
 | Title    | The generated title, at most 200 characters                 |
 | Keywords | Comma separated keywords ordered by relevance, at most 49   |
-| Category | Adobe Stock category code, 1 to 21                          |
+| Category | Adobe Stock category code, 1 to 21, mapped from =primary=   |
 | Releases | Always empty                                                |
 
 The description is not part of this format.
 Adobe Stock matches rows to uploads by file name alone, so a document in which two photos share a file name is rejected.
-Photos without an Adobe Stock category, for example from documents written before categories were added, are exported with an empty =Category= cell and listed in a warning.
+Photos without a category, for example from documents written before the category list was added, are exported with an empty =Category= cell and listed in a warning.
 =samples/tags.stock.json= and =samples/tags.gallery.json= are illustrative documents showing the shape of both targets.
 
 * Useful Scripts
@@ -248,7 +300,7 @@ The program:
 3. Builds a target specific system prompt and asks the model for a strict JSON response.
 4. Rejects refusals and truncated responses, then normalizes the result: whitespace collapsed, titles and descriptions truncated to the target limits, keywords lower cased, deduplicated and capped.
 5. Collects every photo into one document and writes it to disk.
-6. =photo_export.py= later reads that document and writes any export format from it, without contacting the API.
+6. =tags_export.py= later reads that document and writes any export format from it, without contacting the API.
 
 Only the downscaled copy is sent to the API; the original files are never modified.
 

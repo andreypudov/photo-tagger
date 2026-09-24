@@ -38,7 +38,7 @@ def build_document(
                 "description": result.metadata["description"],
                 "keywords": result.metadata["keywords"],
             }
-            for extra in ("categories", "location"):
+            for extra in ("category", "location"):
                 if extra in result.metadata:
                     photo[extra] = result.metadata[extra]
             photos.append(photo)

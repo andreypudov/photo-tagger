@@ -40,8 +40,9 @@
         "atlantic",
         "shoreline"
       ],
-      "categories": {
-        "adobe_stock": 11
+      "category": {
+        "primary": "seascape",
+        "secondary": "architecture"
       }
     }
   ]

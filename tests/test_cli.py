@@ -19,12 +19,7 @@ from photo_tagger import (
     run,
     validate_args,
 )
-from tagger.categories import (
-    ADOBE_STOCK,
-    ADOBE_STOCK_CATEGORIES,
-    CATEGORY_SETS,
-    CategorySet,
-)
+from tagger.categories import CATEGORIES, CATEGORY_IDS, CATEGORY_RULES
 from tagger.errors import FatalError
 from tagger.image_loader import Photo, _format_exif_value, extract_exif, load_photo
 from tagger.metadata import normalize_keywords, normalize_metadata, truncate_text
@@ -117,11 +112,18 @@ VALID_CONTENT = json.dumps(
         "title": "Title",
         "description": "Description",
         "keywords": ["sky"],
-        "adobe_stock_category": 11,
+        "primary_category": "landscape",
+        "secondary_category": None,
     }
 )
 
-CATEGORY_CONTENT = {"title": "t", "description": "d", "keywords": ["k"]}
+CATEGORY_CONTENT = {
+    "title": "t",
+    "description": "d",
+    "keywords": ["k"],
+    "primary_category": "seascape",
+    "secondary_category": None,
+}
 
 MADEIRA = "Madeira, Portugal"
 
@@ -331,45 +333,48 @@ class PromptTests(unittest.TestCase):
             build_system_prompt(GALLERY_PROFILE),
         )
 
-    def test_system_prompt_lists_the_category_choices(self):
-        prompt = build_system_prompt(STOCK_PROFILE, CATEGORY_SETS)
+    def test_system_prompt_lists_every_category_and_rule(self):
+        prompt = build_system_prompt(STOCK_PROFILE)
 
-        self.assertIn("adobe_stock_category", prompt)
-        self.assertIn("11. Landscapes", prompt)
-        self.assertIn("21. Travel", prompt)
-        self.assertNotIn("Landscapes", build_system_prompt(STOCK_PROFILE))
+        self.assertIn("primary_category", prompt)
+        self.assertIn("secondary_category", prompt)
+        for category in CATEGORIES:
+            self.assertIn(f"- {category.id}: {category.description}", prompt)
+        for rule in CATEGORY_RULES:
+            self.assertIn(rule, prompt)
 
-    def test_user_prompt_asks_for_categories_only_when_requested(self):
-        photo = make_photo()
+    def test_every_target_asks_for_categories(self):
+        for profile in (STOCK_PROFILE, GALLERY_PROFILE):
+            with self.subTest(target=profile.name):
+                self.assertIn("Categories:", build_system_prompt(profile))
+                self.assertIn(
+                    "keywords and categories",
+                    build_user_prompt(make_photo(), profile),
+                )
 
-        self.assertIn(
-            "categories", build_user_prompt(photo, STOCK_PROFILE, CATEGORY_SETS)
-        )
-        self.assertNotIn("categories", build_user_prompt(photo, STOCK_PROFILE))
-
-    def test_schema_requires_one_field_per_category_set(self):
-        schema = build_response_schema(STOCK_PROFILE, CATEGORY_SETS)["schema"]
-
-        self.assertIn("adobe_stock_category", schema["required"])
-        self.assertEqual(
-            schema["properties"]["adobe_stock_category"],
-            {
-                "type": "integer",
-                "description": (
-                    "Number of the Adobe Stock category that best matches the photo"
-                ),
-                "enum": list(range(1, 22)),
-            },
-        )
-        self.assertEqual(set(schema["required"]), set(schema["properties"]))
-
-    def test_schema_without_category_sets_is_unchanged(self):
+    def test_schema_requires_a_primary_and_a_nullable_secondary_category(self):
         schema = build_response_schema(STOCK_PROFILE)["schema"]
 
-        self.assertEqual(schema["required"], ["title", "description", "keywords"])
+        self.assertEqual(
+            schema["required"],
+            [
+                "title",
+                "description",
+                "keywords",
+                "primary_category",
+                "secondary_category",
+            ],
+        )
+        primary = schema["properties"]["primary_category"]
+        secondary = schema["properties"]["secondary_category"]
+        self.assertEqual(primary["type"], "string")
+        self.assertEqual(primary["enum"], list(CATEGORY_IDS))
+        self.assertEqual(secondary["type"], ["string", "null"])
+        self.assertEqual(secondary["enum"], [*CATEGORY_IDS, None])
+        self.assertEqual(set(schema["required"]), set(schema["properties"]))
 
     def test_system_prompt_states_the_location_rules(self):
-        prompt = build_system_prompt(STOCK_PROFILE, CATEGORY_SETS, MADEIRA)
+        prompt = build_system_prompt(STOCK_PROFILE, MADEIRA)
 
         self.assertIn("taken in Madeira, Portugal", prompt)
         self.assertIn("never contradict", prompt)
@@ -377,7 +382,7 @@ class PromptTests(unittest.TestCase):
         self.assertIn("at most four location keywords", prompt)
 
     def test_system_prompt_without_location_has_no_location_rules(self):
-        prompt = build_system_prompt(STOCK_PROFILE, CATEGORY_SETS)
+        prompt = build_system_prompt(STOCK_PROFILE)
 
         self.assertNotIn("Location:", prompt)
         self.assertNotIn("specific_place", prompt)
@@ -386,20 +391,16 @@ class PromptTests(unittest.TestCase):
         photo = make_photo()
 
         self.assertIn(
-            "and the specific place",
-            build_user_prompt(photo, STOCK_PROFILE, CATEGORY_SETS, MADEIRA),
+            "keywords, categories and the specific place",
+            build_user_prompt(photo, STOCK_PROFILE, MADEIRA),
         )
         self.assertIn(
-            "a title, a description, keywords and categories",
-            build_user_prompt(photo, STOCK_PROFILE, CATEGORY_SETS),
-        )
-        self.assertIn(
-            "a title, a description and keywords",
+            "a title, a description, keywords and categories for",
             build_user_prompt(photo, STOCK_PROFILE),
         )
 
     def test_schema_requires_a_nullable_specific_place_with_a_location(self):
-        schema = build_response_schema(STOCK_PROFILE, CATEGORY_SETS, MADEIRA)["schema"]
+        schema = build_response_schema(STOCK_PROFILE, MADEIRA)["schema"]
 
         self.assertIn("specific_place", schema["required"])
         self.assertEqual(
@@ -409,7 +410,7 @@ class PromptTests(unittest.TestCase):
         self.assertEqual(set(schema["required"]), set(schema["properties"]))
 
     def test_schema_without_location_has_no_specific_place(self):
-        schema = build_response_schema(STOCK_PROFILE, CATEGORY_SETS)["schema"]
+        schema = build_response_schema(STOCK_PROFILE)["schema"]
 
         self.assertNotIn("specific_place", schema["properties"])
 
@@ -454,6 +455,7 @@ class MetadataNormalizationTests(unittest.TestCase):
 
     def test_normalize_metadata_applies_profile_limits(self):
         raw = {
+            **CATEGORY_CONTENT,
             "title": "word " * 40,
             "description": "sentence " * 100,
             "keywords": ["sky", "sky", "cloud"],
@@ -472,31 +474,63 @@ class MetadataNormalizationTests(unittest.TestCase):
             normalize_metadata({"description": "d", "keywords": ["k"]}, STOCK_PROFILE)
         self.assertIn("title", str(ctx.exception))
 
-    def test_normalize_metadata_collects_every_category_set(self):
-        seasons = CategorySet(name="season", label="Season", choices={1: "Winter"})
-        raw = {**CATEGORY_CONTENT, "adobe_stock_category": 11, "season_category": 1}
+    def test_normalize_metadata_keeps_the_categories(self):
+        raw = {
+            **CATEGORY_CONTENT,
+            "primary_category": "landmark",
+            "secondary_category": "travel",
+        }
 
-        metadata = normalize_metadata(
-            raw, STOCK_PROFILE, (ADOBE_STOCK_CATEGORIES, seasons)
+        metadata = normalize_metadata(raw, STOCK_PROFILE)
+
+        self.assertEqual(
+            metadata["category"], {"primary": "landmark", "secondary": "travel"}
         )
 
-        self.assertEqual(metadata["categories"], {ADOBE_STOCK: 11, "season": 1})
+    def test_normalize_metadata_accepts_no_secondary_category(self):
+        metadata = normalize_metadata(CATEGORY_CONTENT, STOCK_PROFILE)
 
-    def test_normalize_metadata_rejects_invalid_categories(self):
-        for category in (0, 22, 11.0, "11", True, None, [11]):
-            raw = {**CATEGORY_CONTENT, "adobe_stock_category": category}
-            with self.subTest(category=category), self.assertRaises(ValueError) as ctx:
-                normalize_metadata(raw, STOCK_PROFILE, CATEGORY_SETS)
-            self.assertIn("Adobe Stock category", str(ctx.exception))
+        self.assertEqual(
+            metadata["category"], {"primary": "seascape", "secondary": None}
+        )
 
-    def test_normalize_metadata_requires_a_requested_category(self):
+    def test_normalize_metadata_drops_a_secondary_that_repeats_the_primary(self):
+        raw = {**CATEGORY_CONTENT, "secondary_category": "seascape"}
+
+        metadata = normalize_metadata(raw, STOCK_PROFILE)
+
+        self.assertIsNone(metadata["category"]["secondary"])
+
+    def test_normalize_metadata_rejects_an_invalid_primary_category(self):
+        for primary in (None, "", "Seascape", "beach", 11, ["seascape"]):
+            raw = {**CATEGORY_CONTENT, "primary_category": primary}
+            with self.subTest(primary=primary), self.assertRaises(ValueError) as ctx:
+                normalize_metadata(raw, STOCK_PROFILE)
+            self.assertIn("unknown category", str(ctx.exception))
+
+    def test_normalize_metadata_requires_a_primary_category(self):
+        raw = dict(CATEGORY_CONTENT)
+        del raw["primary_category"]
+
         with self.assertRaises(ValueError):
-            normalize_metadata(CATEGORY_CONTENT, STOCK_PROFILE, CATEGORY_SETS)
+            normalize_metadata(raw, STOCK_PROFILE)
 
-    def test_normalize_metadata_without_category_sets_has_no_categories(self):
-        raw = {**CATEGORY_CONTENT, "adobe_stock_category": 11}
+    def test_normalize_metadata_rejects_an_invalid_secondary_category(self):
+        for secondary in ("", "beach", 11, ["travel"]):
+            raw = {**CATEGORY_CONTENT, "secondary_category": secondary}
+            with (
+                self.subTest(secondary=secondary),
+                self.assertRaises(ValueError) as ctx,
+            ):
+                normalize_metadata(raw, STOCK_PROFILE)
+            self.assertIn("secondary category", str(ctx.exception))
 
-        self.assertNotIn("categories", normalize_metadata(raw, STOCK_PROFILE))
+    def test_category_list_is_well_formed(self):
+        self.assertEqual(len(CATEGORY_IDS), len(set(CATEGORY_IDS)))
+        for category in CATEGORIES:
+            with self.subTest(category=category.id):
+                self.assertRegex(category.id, r"^[a-z]+(_[a-z]+)*$")
+                self.assertTrue(category.description.strip())
 
     def test_normalize_metadata_keeps_the_given_and_detected_place(self):
         raw = {**CATEGORY_CONTENT, "specific_place": "  Porto   Moniz "}
@@ -555,9 +589,7 @@ class MetadataNormalizationTests(unittest.TestCase):
 
 class ResponseParsingTests(unittest.TestCase):
     def test_valid_response_is_parsed(self):
-        content = json.dumps(
-            {"title": "Title", "description": "Description", "keywords": ["sky"]}
-        )
+        content = VALID_CONTENT
 
         metadata = parse_response_content(content, GALLERY_PROFILE)
 
@@ -588,17 +620,19 @@ class MetadataGeneratorTests(unittest.TestCase):
         image_part = request["messages"][1]["content"][1]
         self.assertEqual(image_part["image_url"]["detail"], "low")
 
-    def test_generate_always_requests_the_adobe_stock_category(self):
+    def test_generate_always_requests_the_category(self):
         client = FakeClient(response=make_completion(VALID_CONTENT))
         generator = MetadataGenerator(client=client)
 
         metadata = generator.generate(make_photo(), GALLERY_PROFILE)
 
-        self.assertEqual(metadata["categories"], {ADOBE_STOCK: 11})
+        self.assertEqual(
+            metadata["category"], {"primary": "landscape", "secondary": None}
+        )
         request = client.requests[0]
         schema = request["response_format"]["json_schema"]["schema"]
-        self.assertIn("adobe_stock_category", schema["required"])
-        self.assertIn("11. Landscapes", request["messages"][0]["content"])
+        self.assertIn("primary_category", schema["required"])
+        self.assertIn("- landscape:", request["messages"][0]["content"])
 
     def test_generate_rejects_a_missing_category(self):
         content = json.dumps(
@@ -623,7 +657,7 @@ class MetadataGeneratorTests(unittest.TestCase):
         self.assertEqual(
             metadata["location"], {"given": MADEIRA, "detected": "Pico do Arieiro"}
         )
-        self.assertEqual(metadata["categories"], {ADOBE_STOCK: 11})
+        self.assertEqual(metadata["category"]["primary"], "landscape")
         request = client.requests[0]
         self.assertIn("taken in Madeira, Portugal", request["messages"][0]["content"])
         schema = request["response_format"]["json_schema"]["schema"]
@@ -913,13 +947,13 @@ class DocumentTests(unittest.TestCase):
             self.assertEqual(document["photos"][0]["filename"], "sample.jpg")
             self.assertEqual(document["photos"][0]["keywords"], ["one", "two"])
 
-    def test_document_stores_the_categories(self):
+    def test_document_stores_the_category(self):
         generator = FakeGenerator(
             metadata={
                 "title": "t",
                 "description": "d",
                 "keywords": ["k"],
-                "categories": {ADOBE_STOCK: 7},
+                "category": {"primary": "food", "secondary": "drinks"},
             }
         )
         with tempfile.TemporaryDirectory() as directory:
@@ -928,7 +962,10 @@ class DocumentTests(unittest.TestCase):
 
         document = build_document(results, STOCK_PROFILE, "test-model")
 
-        self.assertEqual(document["photos"][0]["categories"], {ADOBE_STOCK: 7})
+        self.assertEqual(
+            document["photos"][0]["category"],
+            {"primary": "food", "secondary": "drinks"},
+        )
 
     def test_document_stores_the_location(self):
         location = {"given": MADEIRA, "detected": None}
@@ -947,7 +984,7 @@ class DocumentTests(unittest.TestCase):
         document = build_document(results, STOCK_PROFILE, "test-model")
 
         self.assertEqual(document["photos"][0]["location"], location)
-        self.assertNotIn("categories", document["photos"][0])
+        self.assertNotIn("category", document["photos"][0])
 
     def test_write_text_keeps_line_endings(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -13,7 +13,6 @@ from openai import (
     RateLimitError,
 )
 
-from .categories import CATEGORY_SETS, CategorySet
 from .errors import FatalError
 from .image_loader import Photo
 from .metadata import normalize_metadata
@@ -64,7 +63,6 @@ def build_messages(
     photo: Photo,
     profile: TargetProfile,
     detail: str = DEFAULT_DETAIL,
-    category_sets: tuple[CategorySet, ...] = (),
     location: str | None = None,
 ) -> list[dict]:
     """Build the chat messages describing a single photo.
@@ -73,7 +71,6 @@ def build_messages(
         photo: The prepared photo
         profile: Target profile describing the destination
         detail: Image detail level requested from the model
-        category_sets: Category lists the model has to choose from
         location: Place where the whole photo set was taken, if known
 
     Returns:
@@ -82,14 +79,14 @@ def build_messages(
     return [
         {
             "role": "system",
-            "content": build_system_prompt(profile, category_sets, location),
+            "content": build_system_prompt(profile, location),
         },
         {
             "role": "user",
             "content": [
                 {
                     "type": "text",
-                    "text": build_user_prompt(photo, profile, category_sets, location),
+                    "text": build_user_prompt(photo, profile, location),
                 },
                 {
                     "type": "image_url",
@@ -103,7 +100,6 @@ def build_messages(
 def parse_response_content(
     content: str | None,
     profile: TargetProfile,
-    category_sets: tuple[CategorySet, ...] = (),
     location: str | None = None,
 ) -> dict:
     """Parse and normalize the JSON payload returned by the model.
@@ -111,7 +107,6 @@ def parse_response_content(
     Args:
         content: Raw message content returned by the model
         profile: Target profile describing the destination
-        category_sets: Category lists the model had to choose from
         location: Place where the whole photo set was taken, if known
 
     Returns:
@@ -128,7 +123,7 @@ def parse_response_content(
     except json.JSONDecodeError as e:
         raise ValueError(f"Model returned malformed JSON: {e}") from e
 
-    return normalize_metadata(payload, profile, category_sets, location)
+    return normalize_metadata(payload, profile, location)
 
 
 class MetadataGenerator:
@@ -141,7 +136,6 @@ class MetadataGenerator:
         timeout: float = DEFAULT_TIMEOUT,
         max_retries: int = DEFAULT_MAX_RETRIES,
         detail: str = DEFAULT_DETAIL,
-        category_sets: tuple[CategorySet, ...] = CATEGORY_SETS,
         location: str | None = None,
         client=None,
     ):
@@ -153,8 +147,6 @@ class MetadataGenerator:
             timeout: Per request timeout in seconds
             max_retries: Number of automatic retries on transient failures
             detail: Image detail level, one of "low", "high" or "auto"
-            category_sets: Category lists the model picks from for every
-                photo, by default every list an export format needs
             location: Place where the whole photo set was taken, as given by
                 the photographer; the model may name a more specific place
                 within it
@@ -165,7 +157,6 @@ class MetadataGenerator:
         """
         self.model = model
         self.detail = detail
-        self.category_sets = category_sets
         self.location = location
         self._client = client or OpenAI(
             api_key=resolve_api_key(api_key),
@@ -191,14 +182,10 @@ class MetadataGenerator:
         try:
             response = self._client.chat.completions.create(
                 model=self.model,
-                messages=build_messages(
-                    photo, profile, self.detail, self.category_sets, self.location
-                ),
+                messages=build_messages(photo, profile, self.detail, self.location),
                 response_format={
                     "type": "json_schema",
-                    "json_schema": build_response_schema(
-                        profile, self.category_sets, self.location
-                    ),
+                    "json_schema": build_response_schema(profile, self.location),
                 },
             )
         except AuthenticationError as e:
@@ -240,6 +227,4 @@ class MetadataGenerator:
         if choice.finish_reason == "length":
             raise ValueError(f"Model response for {photo.filename} was cut short")
 
-        return parse_response_content(
-            choice.message.content, profile, self.category_sets, self.location
-        )
+        return parse_response_content(choice.message.content, profile, self.location)

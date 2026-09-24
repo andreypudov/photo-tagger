@@ -1,4 +1,4 @@
-from .categories import CategorySet
+from .categories import CATEGORY_IDS, PRIMARY_FIELD, SECONDARY_FIELD
 from .prompts import SPECIFIC_PLACE_FIELD
 from .targets import TargetProfile
 
@@ -67,30 +67,34 @@ def normalize_keywords(keywords, max_keywords: int) -> list[str]:
     return cleaned
 
 
-def normalize_category(raw: dict, category_set: CategorySet) -> int:
-    """Return the category code chosen from a set, after validating it.
+def normalize_category(raw: dict) -> dict:
+    """Return the primary and secondary category, after validating them.
 
     Args:
         raw: Parsed JSON payload returned by the model
-        category_set: Category list the model had to choose from
 
     Returns:
-        The chosen category code
+        A mapping with the primary category id and the secondary one, which
+        is None when the model named none or repeated the primary one
 
     Raises:
-        ValueError: If the code is missing or not part of the set
+        ValueError: If the primary category is missing or unknown, or the
+            secondary one is neither null nor a known category
     """
-    category = raw.get(category_set.field)
-    # bool is an int subclass and 11.0 == 11, so check the type as well.
-    if (
-        not isinstance(category, int)
-        or isinstance(category, bool)
-        or category not in category_set.choices
-    ):
+    primary = raw.get(PRIMARY_FIELD)
+    if primary not in CATEGORY_IDS:
+        raise ValueError(f"Model response has an unknown category: {primary}")
+
+    secondary = raw.get(SECONDARY_FIELD)
+    if secondary is not None and secondary not in CATEGORY_IDS:
         raise ValueError(
-            f"Model response has an unknown {category_set.label} category: {category}"
+            f"Model response has an unknown secondary category: {secondary}"
         )
-    return category
+
+    return {
+        "primary": primary,
+        "secondary": None if secondary == primary else secondary,
+    }
 
 
 def normalize_specific_place(raw: dict, location: str) -> str | None:
@@ -130,7 +134,6 @@ def normalize_specific_place(raw: dict, location: str) -> str | None:
 def normalize_metadata(
     raw: dict,
     profile: TargetProfile,
-    category_sets: tuple[CategorySet, ...] = (),
     location: str | None = None,
 ) -> dict:
     """Validate and normalize the metadata returned by the model.
@@ -138,13 +141,11 @@ def normalize_metadata(
     Args:
         raw: Parsed JSON payload returned by the model
         profile: Target profile describing the destination
-        category_sets: Category lists the model had to choose from
         location: Place where the whole photo set was taken, if known
 
     Returns:
-        A mapping with the title, description and keywords keys, plus a
-        categories mapping of set name to code when category sets were given
-        and a location mapping with the given and the detected place when a
+        A mapping with the title, description, keywords and category keys,
+        plus a location mapping with the given and the detected place when a
         location was given
 
     Raises:
@@ -170,13 +171,8 @@ def normalize_metadata(
         "title": truncate_text(title, profile.title_max_chars),
         "description": truncate_text(description, profile.description_max_chars),
         "keywords": keywords,
+        "category": normalize_category(raw),
     }
-
-    if category_sets:
-        metadata["categories"] = {
-            category_set.name: normalize_category(raw, category_set)
-            for category_set in category_sets
-        }
 
     if location:
         metadata["location"] = {

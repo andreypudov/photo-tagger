@@ -1,57 +1,77 @@
 from dataclasses import dataclass
 
-ADOBE_STOCK = "adobe_stock"
+PRIMARY_FIELD = "primary_category"
+SECONDARY_FIELD = "secondary_category"
 
 
 @dataclass(frozen=True)
-class CategorySet:
-    """A fixed list of categories a destination sorts its photos into.
+class Category:
+    """One entry of the photo-tagger category list.
 
-    The model picks one category from every registered set for every photo,
-    so the tagging JSON already holds what each export format needs.
+    The list is a superset of the categories stock sites use: every category
+    maps to exactly one category of each site, so a tagged photo can be
+    exported to any site without asking the model again. Mapping to a site
+    is the job of the export format.
 
     Attributes:
-        name: Key under which the chosen code is stored in the JSON document
-        label: Human readable name of the destination
-        choices: Mapping of the numeric category codes to their names
+        id: Stable identifier stored in the JSON document
+        description: What the category covers, shown to the model
     """
 
-    name: str
-    label: str
-    choices: dict[int, str]
-
-    @property
-    def field(self) -> str:
-        """Return the property name used in the model response schema."""
-        return f"{self.name}_category"
+    id: str
+    description: str
 
 
-ADOBE_STOCK_CATEGORIES = CategorySet(
-    name=ADOBE_STOCK,
-    label="Adobe Stock",
-    choices={
-        1: "Animals",
-        2: "Buildings and Architecture",
-        3: "Business",
-        4: "Drinks",
-        5: "The Environment",
-        6: "States of Mind",
-        7: "Food",
-        8: "Graphic Resources",
-        9: "Hobbies and Leisure",
-        10: "Industry",
-        11: "Landscapes",
-        12: "Lifestyle",
-        13: "People",
-        14: "Plants and Flowers",
-        15: "Culture and Religion",
-        16: "Science",
-        17: "Social Issues",
-        18: "Sports",
-        19: "Technology",
-        20: "Transport",
-        21: "Travel",
-    },
+CATEGORIES = (
+    Category("wildlife", "Wild animals, birds, insects and marine life"),
+    Category("pets", "Dogs, cats and other domestic or farm animals"),
+    Category("landmark", "Famous buildings, monuments and sights"),
+    Category("architecture", "Building exteriors and architectural details"),
+    Category("interior", "Rooms and interior design"),
+    Category("cityscape", "Skylines, streets and urban views"),
+    Category("landscape", "Mountains, fields, countryside, lakes and rivers"),
+    Category("seascape", "Coasts, beaches and the sea"),
+    Category("sky_weather", "Sky, clouds, sunsets, sunrises and weather"),
+    Category("environment", "Ecology, pollution, climate change and renewable energy"),
+    Category("plants_flowers", "Plants, flowers and trees as the subject"),
+    Category("food", "Dishes, ingredients and cooking"),
+    Category("drinks", "Beverages such as coffee, tea, wine and cocktails"),
+    Category("people", "Portraits and people as the subject"),
+    Category("lifestyle", "Everyday life, home, family and leisure scenes"),
+    Category("business", "Office, work, finance and commerce"),
+    Category("industry", "Factories, construction, mining and power plants"),
+    Category("agriculture", "Farming, crops, orchards and harvest"),
+    Category("technology", "Devices, computers, electronics and digital life"),
+    Category("science_health", "Science, medicine, laboratories and healthcare"),
+    Category("sports", "Sports, fitness and athletes"),
+    Category("hobbies", "Crafts, music, games and outdoor recreation"),
+    Category("travel", "Tourism, travellers, luggage and sightseeing"),
+    Category("transport", "Vehicles, roads, trains, boats and aircraft"),
+    Category("culture_religion", "Traditions, religion, rituals, art and heritage"),
+    Category("celebrations", "Holidays, parties, festivals and events"),
+    Category("social_issues", "Poverty, protest, inequality and other issues"),
+    Category("emotions_concepts", "Moods, feelings and abstract ideas as the subject"),
+    Category(
+        "backgrounds_textures",
+        "Textures, patterns, abstract images and copy space backgrounds",
+    ),
 )
 
-CATEGORY_SETS = (ADOBE_STOCK_CATEGORIES,)
+CATEGORY_IDS = tuple(category.id for category in CATEGORIES)
+
+# Rules for photos that fit more than one category, so that similar photos
+# of an album end up in the same category.
+CATEGORY_RULES = (
+    "A recognizable landmark is landmark, even when it is also architecture "
+    "or a travel subject.",
+    "Use people when a person is the subject and lifestyle when the activity "
+    "or scene matters more than who is in it.",
+    "Use travel only when tourism itself is shown, such as travellers, "
+    "luggage or sightseeing; a place on its own is landscape, cityscape or "
+    "landmark.",
+    "Religious buildings are landmark or architecture; culture_religion is "
+    "for ceremonies, rituals, traditions and art.",
+    "Use backgrounds_textures when there is no distinct subject.",
+    "Use emotions_concepts only when a feeling or an idea is clearly the "
+    "point of the photograph.",
+)

@@ -10,11 +10,13 @@ from unittest.mock import patch
 
 from PIL import Image
 
-import photo_export
+import tags_export
 import photo_tagger
-from tagger.categories import ADOBE_STOCK_CATEGORIES
+from tagger.categories import CATEGORY_IDS
 from tagger.export import (
     ADOBE_STOCK,
+    ADOBE_STOCK_CATEGORIES,
+    ADOBE_STOCK_CATEGORY_MAP,
     ADOBE_STOCK_COLUMNS,
     build_adobe_stock_row,
     find_category,
@@ -36,7 +38,7 @@ def make_entry(filename="lighthouse.jpg", **overrides) -> dict:
         "title": "Lighthouse on rocky coastline at sunrise",
         "description": "A white lighthouse on a headland.",
         "keywords": ["lighthouse", "coastline", "sunrise"],
-        "categories": {"adobe_stock": 11},
+        "category": {"primary": "seascape", "secondary": None},
     }
     entry.update(overrides)
     return entry
@@ -66,10 +68,10 @@ def read_rows(path: str) -> list[list[str]]:
 
 
 def export(argv) -> tuple[int, str, str]:
-    """Run photo_export.main and capture its exit code, stdout and stderr."""
+    """Run tags_export.main and capture its exit code, stdout and stderr."""
     stdout, stderr = StringIO(), StringIO()
     with redirect_stdout(stdout), redirect_stderr(stderr):
-        code = photo_export.main(argv)
+        code = tags_export.main(argv)
     return code, stdout.getvalue(), stderr.getvalue()
 
 
@@ -94,7 +96,7 @@ class LoadDocumentTests(unittest.TestCase):
             with self.subTest(sample=name):
                 document = load_document(os.path.join(root, "samples", name))
                 photo = document["photos"][0]
-                self.assertEqual(find_category(photo, ADOBE_STOCK_CATEGORIES), 11)
+                self.assertEqual(find_category(photo), "seascape")
 
     def test_missing_file_raises(self):
         with self.assertRaises(FileNotFoundError):
@@ -134,23 +136,61 @@ class LoadDocumentTests(unittest.TestCase):
 
 
 class CategoryLookupTests(unittest.TestCase):
-    def test_known_category_is_returned(self):
-        self.assertEqual(find_category(make_entry(), ADOBE_STOCK_CATEGORIES), 11)
+    def test_primary_category_is_returned(self):
+        entry = make_entry(category={"primary": "landmark", "secondary": "travel"})
+
+        self.assertEqual(find_category(entry), "landmark")
 
     def test_missing_or_invalid_category_is_none(self):
-        for categories in (
+        for category in (
             None,
-            "11",
+            "seascape",
             {},
-            {"adobe_stock": 0},
-            {"adobe_stock": 22},
-            {"adobe_stock": 11.0},
-            {"adobe_stock": True},
-            {"adobe_stock": [11]},
+            {"primary": None},
+            {"primary": "beach"},
+            {"primary": ["seascape"]},
+            {"adobe_stock": 11},
         ):
-            entry = make_entry(categories=categories)
-            with self.subTest(categories=categories):
-                self.assertIsNone(find_category(entry, ADOBE_STOCK_CATEGORIES))
+            entry = make_entry(category=category)
+            with self.subTest(category=category):
+                self.assertIsNone(find_category(entry))
+
+    def test_documents_from_before_the_category_list_have_no_category(self):
+        entry = make_entry()
+        del entry["category"]
+        entry["categories"] = {"adobe_stock": 11}
+
+        self.assertIsNone(find_category(entry))
+
+
+class AdobeStockMappingTests(unittest.TestCase):
+    def test_every_category_is_mapped(self):
+        self.assertEqual(set(ADOBE_STOCK_CATEGORY_MAP), set(CATEGORY_IDS))
+
+    def test_every_mapping_is_a_valid_adobe_stock_code(self):
+        for category, code in ADOBE_STOCK_CATEGORY_MAP.items():
+            with self.subTest(category=category):
+                self.assertIn(code, ADOBE_STOCK_CATEGORIES)
+
+    def test_every_adobe_stock_category_is_reachable(self):
+        self.assertEqual(
+            set(ADOBE_STOCK_CATEGORY_MAP.values()), set(ADOBE_STOCK_CATEGORIES)
+        )
+
+    def test_agreed_mappings(self):
+        expected = {
+            "landmark": "Buildings and Architecture",
+            "cityscape": "Buildings and Architecture",
+            "agriculture": "Industry",
+            "celebrations": "Culture and Religion",
+            "seascape": "Landscapes",
+            "emotions_concepts": "States of Mind",
+            "backgrounds_textures": "Graphic Resources",
+        }
+        for category, name in expected.items():
+            with self.subTest(category=category):
+                code = ADOBE_STOCK_CATEGORY_MAP[category]
+                self.assertEqual(ADOBE_STOCK_CATEGORIES[code], name)
 
 
 class AdobeStockRowTests(unittest.TestCase):
@@ -202,9 +242,14 @@ class AdobeStockRowTests(unittest.TestCase):
 
     def test_missing_category_leaves_the_cell_empty(self):
         entry = make_entry()
-        del entry["categories"]
+        del entry["category"]
 
         self.assertEqual(build_adobe_stock_row(entry)["Category"], "")
+
+    def test_category_uses_the_primary_and_ignores_the_secondary(self):
+        entry = make_entry(category={"primary": "food", "secondary": "drinks"})
+
+        self.assertEqual(build_adobe_stock_row(entry)["Category"], 7)
 
 
 class AdobeStockCsvTests(unittest.TestCase):
@@ -221,7 +266,7 @@ class AdobeStockCsvTests(unittest.TestCase):
         )
 
     def test_csv_round_trips_through_a_reader(self):
-        entries = [make_entry("a.jpg"), make_entry("b.jpg", categories={})]
+        entries = [make_entry("a.jpg"), make_entry("b.jpg", category={})]
 
         rows = list(csv.reader(StringIO(render_adobe_stock_csv(entries))))
 
@@ -240,7 +285,7 @@ class FormatRegistryTests(unittest.TestCase):
         export_format = get_format(ADOBE_STOCK)
 
         self.assertEqual(export_format.extension, ".csv")
-        self.assertIs(export_format.category_set, ADOBE_STOCK_CATEGORIES)
+        self.assertIs(export_format.category_map, ADOBE_STOCK_CATEGORY_MAP)
         self.assertTrue(export_format.unique_filenames)
 
     def test_unknown_format_raises(self):
@@ -265,12 +310,12 @@ class ExportCommandTests(unittest.TestCase):
     def _usage_error(self, argv) -> str:
         stderr = StringIO()
         with redirect_stderr(stderr), self.assertRaises(SystemExit) as ctx:
-            photo_export.build_parser().parse_args(argv)
+            tags_export.build_parser().parse_args(argv)
         self.assertEqual(ctx.exception.code, 2)
         return stderr.getvalue()
 
     def test_required_flags_are_parsed(self):
-        args = photo_export.build_parser().parse_args(
+        args = tags_export.build_parser().parse_args(
             ["--format", "adobe-stock", "--output", "adobe.csv", "tags.json"]
         )
 
@@ -293,7 +338,7 @@ class ExportCommandTests(unittest.TestCase):
     def test_help_lists_required_arguments_separately(self):
         stdout = StringIO()
         with redirect_stdout(stdout), self.assertRaises(SystemExit):
-            photo_export.build_parser().parse_args(["-h"])
+            tags_export.build_parser().parse_args(["-h"])
 
         help_text = stdout.getvalue()
         required = help_text[help_text.index("required arguments:") :]
@@ -304,9 +349,9 @@ class ExportCommandTests(unittest.TestCase):
     def test_version_flag_is_available(self):
         stdout = StringIO()
         with redirect_stdout(stdout), self.assertRaises(SystemExit):
-            photo_export.build_parser().parse_args(["--version"])
+            tags_export.build_parser().parse_args(["--version"])
 
-        self.assertIn(photo_export.__version__, stdout.getvalue())
+        self.assertIn(tags_export.__version__, stdout.getvalue())
 
     def test_output_is_written(self):
         path = write_json(self.directory, make_document(make_entry()))
@@ -342,7 +387,7 @@ class ExportCommandTests(unittest.TestCase):
 
     def test_missing_categories_and_failed_photos_are_warned_about(self):
         uncategorized = make_entry("old.jpg")
-        del uncategorized["categories"]
+        del uncategorized["category"]
         document = make_document(
             make_entry(),
             uncategorized,
@@ -355,12 +400,12 @@ class ExportCommandTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(len(list(csv.reader(StringIO(stdout)))), 3)
         self.assertIn("1 photo(s) failed tagging", stderr)
-        self.assertIn("no Adobe Stock category", stderr)
+        self.assertIn("1 photo(s) have no category", stderr)
         self.assertIn("old.jpg", stderr)
 
     def test_quiet_suppresses_warnings(self):
         entry = make_entry()
-        del entry["categories"]
+        del entry["category"]
         path = write_json(self.directory, make_document(entry))
 
         _, _, stderr = export([path, "-f", "adobe-stock", "-o", "-", "-q"])
@@ -420,7 +465,8 @@ class TagThenExportTests(unittest.TestCase):
                 "title": "Mountain lake under a clear sky",
                 "description": "Calm alpine lake below mountain peaks.",
                 "keywords": ["mountain", "lake", "alpine, lake", "sky"],
-                "adobe_stock_category": 11,
+                "primary_category": "landscape",
+                "secondary_category": None,
             }
         )
         requests = []
@@ -455,7 +501,10 @@ class TagThenExportTests(unittest.TestCase):
 
             with open(tags, encoding="utf-8") as handle:
                 document = json.load(handle)
-            self.assertEqual(document["photos"][0]["categories"], {"adobe_stock": 11})
+            self.assertEqual(
+                document["photos"][0]["category"],
+                {"primary": "landscape", "secondary": None},
+            )
 
             with patch.object(
                 MetadataGenerator, "generate", side_effect=AssertionError
