@@ -1,4 +1,3 @@
-import csv
 import json
 import os
 import tempfile
@@ -13,17 +12,13 @@ from openai import AuthenticationError, NotFoundError
 from PIL import Image
 
 from photo_tagger import __version__, build_parser, run, validate_args
-from tagger.errors import FatalError
-from tagger.formats import (
+from tagger.categories import (
     ADOBE_STOCK,
     ADOBE_STOCK_CATEGORIES,
-    JSON,
-    build_adobe_stock_row,
-    check_paths,
-    get_format,
-    write_adobe_stock_csv,
-    write_json,
+    CATEGORY_SETS,
+    CategorySet,
 )
+from tagger.errors import FatalError
 from tagger.image_loader import Photo, _format_exif_value, extract_exif, load_photo
 from tagger.metadata import normalize_keywords, normalize_metadata, truncate_text
 from tagger.openai_client import (
@@ -32,14 +27,14 @@ from tagger.openai_client import (
     parse_response_content,
     resolve_api_key,
 )
-from tagger.output import build_document, print_summary, write_document
+from tagger.output import build_document, write_document, write_text
 from tagger.prompts import (
     build_response_schema,
     build_system_prompt,
     build_user_prompt,
     describe_orientation,
 )
-from tagger.tagging import PhotoResult, collect_photo_paths, tag_photo, tag_photos
+from tagger.tagging import collect_photo_paths, tag_photo, tag_photos
 from tagger.targets import GALLERY, GALLERY_PROFILE, STOCK, STOCK_PROFILE, get_profile
 
 
@@ -111,8 +106,15 @@ class FakeClient:
 
 
 VALID_CONTENT = json.dumps(
-    {"title": "Title", "description": "Description", "keywords": ["sky"]}
+    {
+        "title": "Title",
+        "description": "Description",
+        "keywords": ["sky"],
+        "adobe_stock_category": 11,
+    }
 )
+
+CATEGORY_CONTENT = {"title": "t", "description": "d", "keywords": ["k"]}
 
 
 class ParserTests(unittest.TestCase):
@@ -139,24 +141,11 @@ class ParserTests(unittest.TestCase):
         with redirect_stderr(StringIO()), self.assertRaises(SystemExit):
             parser.parse_args(["--target", "postcard", "a.jpg"])
 
-    def test_format_defaults_to_json(self):
-        args = build_parser().parse_args(["a.jpg"])
+    def test_output_defaults_to_tags_json(self):
+        parser = build_parser()
+        args = parser.parse_args(["a.jpg"])
 
-        self.assertEqual(args.format, JSON)
-        self.assertIsNone(args.output)
-
-    def test_adobe_stock_format_is_accepted(self):
-        args = build_parser().parse_args(["--format", "adobe-stock", "a.jpg"])
-
-        self.assertEqual(args.format, ADOBE_STOCK)
-
-    def test_unknown_format_is_rejected(self):
-        with redirect_stderr(StringIO()), self.assertRaises(SystemExit):
-            build_parser().parse_args(["--format", "xml", "a.jpg"])
-
-    def test_default_output_follows_the_format(self):
-        self.assertEqual(get_format(JSON).default_output, "tags.json")
-        self.assertEqual(get_format(ADOBE_STOCK).default_output, "tags.csv")
+        self.assertEqual(args.output, "tags.json")
 
     def test_version_flag_is_available(self):
         parser = build_parser()
@@ -273,6 +262,43 @@ class PromptTests(unittest.TestCase):
             build_system_prompt(GALLERY_PROFILE),
         )
 
+    def test_system_prompt_lists_the_category_choices(self):
+        prompt = build_system_prompt(STOCK_PROFILE, CATEGORY_SETS)
+
+        self.assertIn("adobe_stock_category", prompt)
+        self.assertIn("11. Landscapes", prompt)
+        self.assertIn("21. Travel", prompt)
+        self.assertNotIn("Landscapes", build_system_prompt(STOCK_PROFILE))
+
+    def test_user_prompt_asks_for_categories_only_when_requested(self):
+        photo = make_photo()
+
+        self.assertIn(
+            "categories", build_user_prompt(photo, STOCK_PROFILE, CATEGORY_SETS)
+        )
+        self.assertNotIn("categories", build_user_prompt(photo, STOCK_PROFILE))
+
+    def test_schema_requires_one_field_per_category_set(self):
+        schema = build_response_schema(STOCK_PROFILE, CATEGORY_SETS)["schema"]
+
+        self.assertIn("adobe_stock_category", schema["required"])
+        self.assertEqual(
+            schema["properties"]["adobe_stock_category"],
+            {
+                "type": "integer",
+                "description": (
+                    "Number of the Adobe Stock category that best matches the photo"
+                ),
+                "enum": list(range(1, 22)),
+            },
+        )
+        self.assertEqual(set(schema["required"]), set(schema["properties"]))
+
+    def test_schema_without_category_sets_is_unchanged(self):
+        schema = build_response_schema(STOCK_PROFILE)["schema"]
+
+        self.assertEqual(schema["required"], ["title", "description", "keywords"])
+
     def test_user_prompt_includes_exif_context(self):
         photo = make_photo(exif={"Model": "Leica M11", "FNumber": "f/2"})
 
@@ -332,41 +358,31 @@ class MetadataNormalizationTests(unittest.TestCase):
             normalize_metadata({"description": "d", "keywords": ["k"]}, STOCK_PROFILE)
         self.assertIn("title", str(ctx.exception))
 
-    def test_normalize_metadata_keeps_a_known_category(self):
-        raw = {"title": "t", "description": "d", "keywords": ["k"], "category": 11}
+    def test_normalize_metadata_collects_every_category_set(self):
+        seasons = CategorySet(name="season", label="Season", choices={1: "Winter"})
+        raw = {**CATEGORY_CONTENT, "adobe_stock_category": 11, "season_category": 1}
 
-        metadata = normalize_metadata(raw, STOCK_PROFILE, ADOBE_STOCK_CATEGORIES)
+        metadata = normalize_metadata(
+            raw, STOCK_PROFILE, (ADOBE_STOCK_CATEGORIES, seasons)
+        )
 
-        self.assertEqual(metadata["category"], 11)
+        self.assertEqual(metadata["categories"], {ADOBE_STOCK: 11, "season": 1})
 
-    def test_normalize_metadata_rejects_an_unknown_category(self):
-        raw = {"title": "t", "description": "d", "keywords": ["k"], "category": 99}
+    def test_normalize_metadata_rejects_invalid_categories(self):
+        for category in (0, 22, 11.0, "11", True, None, [11]):
+            raw = {**CATEGORY_CONTENT, "adobe_stock_category": category}
+            with self.subTest(category=category), self.assertRaises(ValueError) as ctx:
+                normalize_metadata(raw, STOCK_PROFILE, CATEGORY_SETS)
+            self.assertIn("Adobe Stock category", str(ctx.exception))
 
-        with self.assertRaises(ValueError) as ctx:
-            normalize_metadata(raw, STOCK_PROFILE, ADOBE_STOCK_CATEGORIES)
-        self.assertIn("category", str(ctx.exception))
-
-    def test_normalize_metadata_rejects_a_non_integer_category(self):
-        for category in (11.0, "11", True, None):
-            raw = {
-                "title": "t",
-                "description": "d",
-                "keywords": ["k"],
-                "category": category,
-            }
-            with self.subTest(category=category), self.assertRaises(ValueError):
-                normalize_metadata(raw, STOCK_PROFILE, ADOBE_STOCK_CATEGORIES)
-
-    def test_normalize_metadata_requires_a_category_when_requested(self):
-        raw = {"title": "t", "description": "d", "keywords": ["k"]}
-
+    def test_normalize_metadata_requires_a_requested_category(self):
         with self.assertRaises(ValueError):
-            normalize_metadata(raw, STOCK_PROFILE, ADOBE_STOCK_CATEGORIES)
+            normalize_metadata(CATEGORY_CONTENT, STOCK_PROFILE, CATEGORY_SETS)
 
-    def test_normalize_metadata_ignores_category_when_not_requested(self):
-        raw = {"title": "t", "description": "d", "keywords": ["k"], "category": 11}
+    def test_normalize_metadata_without_category_sets_has_no_categories(self):
+        raw = {**CATEGORY_CONTENT, "adobe_stock_category": 11}
 
-        self.assertNotIn("category", normalize_metadata(raw, STOCK_PROFILE))
+        self.assertNotIn("categories", normalize_metadata(raw, STOCK_PROFILE))
 
     def test_normalize_metadata_requires_keywords(self):
         with self.assertRaises(ValueError) as ctx:
@@ -374,36 +390,6 @@ class MetadataNormalizationTests(unittest.TestCase):
                 {"title": "t", "description": "d", "keywords": []}, STOCK_PROFILE
             )
         self.assertIn("keywords", str(ctx.exception))
-
-
-class CategoryPromptTests(unittest.TestCase):
-    def test_schema_requires_a_category_only_when_requested(self):
-        plain = build_response_schema(STOCK_PROFILE)["schema"]
-        with_categories = build_response_schema(STOCK_PROFILE, ADOBE_STOCK_CATEGORIES)[
-            "schema"
-        ]
-
-        self.assertNotIn("category", plain["required"])
-        self.assertIn("category", with_categories["required"])
-        self.assertEqual(
-            with_categories["properties"]["category"]["enum"],
-            list(range(1, 22)),
-        )
-
-    def test_user_prompt_asks_for_a_category_only_when_requested(self):
-        photo = make_photo()
-
-        self.assertIn(
-            "category",
-            build_user_prompt(photo, STOCK_PROFILE, ADOBE_STOCK_CATEGORIES),
-        )
-        self.assertNotIn("category", build_user_prompt(photo, STOCK_PROFILE))
-
-    def test_system_prompt_lists_the_categories(self):
-        prompt = build_system_prompt(STOCK_PROFILE, ADOBE_STOCK_CATEGORIES)
-
-        self.assertIn("11. Landscapes", prompt)
-        self.assertNotIn("Landscapes", build_system_prompt(STOCK_PROFILE))
 
 
 class ResponseParsingTests(unittest.TestCase):
@@ -441,50 +427,28 @@ class MetadataGeneratorTests(unittest.TestCase):
         image_part = request["messages"][1]["content"][1]
         self.assertEqual(image_part["image_url"]["detail"], "low")
 
-    def test_generate_requests_and_returns_a_category(self):
-        content = json.dumps(
-            {
-                "title": "Title",
-                "description": "Description",
-                "keywords": ["sky"],
-                "category": 11,
-            }
-        )
-        client = FakeClient(response=make_completion(content))
-        generator = MetadataGenerator(categories=ADOBE_STOCK_CATEGORIES, client=client)
-
-        metadata = generator.generate(make_photo(), STOCK_PROFILE)
-
-        self.assertEqual(metadata["category"], 11)
-        request = client.requests[0]
-        schema = request["response_format"]["json_schema"]["schema"]
-        self.assertIn("category", schema["required"])
-        self.assertIn("21. Travel", request["messages"][0]["content"])
-
-    def test_generate_rejects_a_category_outside_the_list(self):
-        content = json.dumps(
-            {
-                "title": "Title",
-                "description": "Description",
-                "keywords": ["sky"],
-                "category": 42,
-            }
-        )
-        client = FakeClient(response=make_completion(content))
-        generator = MetadataGenerator(categories=ADOBE_STOCK_CATEGORIES, client=client)
-
-        with self.assertRaises(ValueError):
-            generator.generate(make_photo(), STOCK_PROFILE)
-
-    def test_generate_without_categories_leaves_the_schema_unchanged(self):
+    def test_generate_always_requests_the_adobe_stock_category(self):
         client = FakeClient(response=make_completion(VALID_CONTENT))
         generator = MetadataGenerator(client=client)
 
-        metadata = generator.generate(make_photo(), STOCK_PROFILE)
+        metadata = generator.generate(make_photo(), GALLERY_PROFILE)
 
-        self.assertNotIn("category", metadata)
-        schema = client.requests[0]["response_format"]["json_schema"]["schema"]
-        self.assertNotIn("category", schema["properties"])
+        self.assertEqual(metadata["categories"], {ADOBE_STOCK: 11})
+        request = client.requests[0]
+        schema = request["response_format"]["json_schema"]["schema"]
+        self.assertIn("adobe_stock_category", schema["required"])
+        self.assertIn("11. Landscapes", request["messages"][0]["content"])
+
+    def test_generate_rejects_a_missing_category(self):
+        content = json.dumps(
+            {"title": "Title", "description": "Description", "keywords": ["sky"]}
+        )
+        client = FakeClient(response=make_completion(content))
+        generator = MetadataGenerator(client=client)
+
+        with self.assertRaises(ValueError) as ctx:
+            generator.generate(make_photo(), STOCK_PROFILE)
+        self.assertIn("category", str(ctx.exception))
 
     def test_refusal_is_reported(self):
         client = FakeClient(response=make_completion(refusal="cannot help"))
@@ -760,6 +724,47 @@ class DocumentTests(unittest.TestCase):
             self.assertEqual(document["photos"][0]["filename"], "sample.jpg")
             self.assertEqual(document["photos"][0]["keywords"], ["one", "two"])
 
+    def test_document_stores_the_categories(self):
+        generator = FakeGenerator(
+            metadata={
+                "title": "t",
+                "description": "d",
+                "keywords": ["k"],
+                "categories": {ADOBE_STOCK: 7},
+            }
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = write_test_image(os.path.join(directory, "sample.jpg"))
+            results = tag_photos([path], STOCK_PROFILE, generator)
+
+        document = build_document(results, STOCK_PROFILE, "test-model")
+
+        self.assertEqual(document["photos"][0]["categories"], {ADOBE_STOCK: 7})
+
+    def test_write_text_keeps_line_endings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "rows.csv")
+            write_text("a,b\r\nc,d\r\n", path)
+
+            with open(path, "rb") as handle:
+                self.assertEqual(handle.read(), b"a,b\r\nc,d\r\n")
+
+    def test_write_text_reports_unwritable_paths(self):
+        with tempfile.TemporaryDirectory() as directory:
+            blocker = os.path.join(directory, "file")
+            write_text("x", blocker)
+
+            with self.assertRaises(RuntimeError):
+                write_text("x", os.path.join(blocker, "nested.csv"))
+
+    def test_write_document_to_standard_output(self):
+        stdout = StringIO()
+        with redirect_stdout(stdout):
+            write_document({"photos": []}, "-", indent=0)
+
+        self.assertEqual(json.loads(stdout.getvalue()), {"photos": []})
+        self.assertTrue(stdout.getvalue().endswith("\n"))
+
     def test_write_document_creates_the_file(self):
         with tempfile.TemporaryDirectory() as directory:
             path = os.path.join(directory, "nested", "tags.json")
@@ -767,166 +772,6 @@ class DocumentTests(unittest.TestCase):
 
             with open(path, encoding="utf-8") as handle:
                 self.assertEqual(json.load(handle)["target"], STOCK)
-
-
-class AdobeStockFormatTests(unittest.TestCase):
-    def test_row_follows_the_adobe_stock_columns(self):
-        result = PhotoResult(
-            path="shoot/lighthouse.jpg",
-            metadata={
-                "title": "Lighthouse at sunrise",
-                "description": "d",
-                "keywords": ["lighthouse", "sea, coast", "sunrise"],
-                "category": 11,
-            },
-        )
-
-        row = build_adobe_stock_row(result)
-
-        self.assertEqual(
-            row,
-            {
-                "Filename": "lighthouse.jpg",
-                "Title": "Lighthouse at sunrise",
-                "Keywords": "lighthouse, sea coast, sunrise",
-                "Category": 11,
-                "Releases": "",
-            },
-        )
-
-    def test_row_caps_keywords_at_49(self):
-        keywords = [f"keyword{index}" for index in range(60)]
-        result = PhotoResult(
-            path="a.jpg",
-            metadata={"title": "t", "description": "d", "keywords": keywords},
-        )
-
-        row = build_adobe_stock_row(result)
-
-        self.assertEqual(len(row["Keywords"].split(", ")), 49)
-
-    def test_row_deduplicates_keywords_after_removing_commas(self):
-        result = PhotoResult(
-            path="a.jpg",
-            metadata={
-                "title": "t",
-                "description": "d",
-                "keywords": ["sea coast", "sea, coast", "harbour"],
-            },
-        )
-
-        row = build_adobe_stock_row(result)
-
-        self.assertEqual(row["Keywords"], "sea coast, harbour")
-
-    def test_row_limits_the_title_to_200_characters(self):
-        result = PhotoResult(
-            path="a.jpg",
-            metadata={"title": "word " * 60, "description": "d", "keywords": ["k"]},
-        )
-
-        row = build_adobe_stock_row(result)
-
-        self.assertLessEqual(len(row["Title"]), 200)
-
-    def test_row_leaves_category_empty_when_missing(self):
-        result = PhotoResult(
-            path="a.jpg",
-            metadata={"title": "t", "description": "d", "keywords": ["k"]},
-        )
-
-        self.assertEqual(build_adobe_stock_row(result)["Category"], "")
-
-    def _tagged(self, path, title="Title", category=11):
-        return PhotoResult(
-            path=path,
-            metadata={
-                "title": title,
-                "description": "d",
-                "keywords": ["one", "two"],
-                "category": category,
-            },
-        )
-
-    def test_csv_quotes_commas_and_keeps_unicode(self):
-        results = [
-            self._tagged("café.jpg", title="Café terrace, Paris, at dusk"),
-            PhotoResult(path="broken.jpg", error="unreadable"),
-        ]
-        with tempfile.TemporaryDirectory() as directory:
-            path = os.path.join(directory, "nested", "adobe.csv")
-            write_adobe_stock_csv(results, STOCK_PROFILE, "test-model", path)
-
-            with open(path, encoding="utf-8", newline="") as handle:
-                text = handle.read()
-
-        self.assertTrue(text.startswith("Filename,Title,Keywords,Category,Releases"))
-        self.assertIn(
-            'café.jpg,"Café terrace, Paris, at dusk","one, two",11,\r\n', text
-        )
-        self.assertNotIn("broken.jpg", text)
-
-    def test_csv_holds_only_the_header_when_every_photo_failed(self):
-        results = [PhotoResult(path="broken.jpg", error="unreadable")]
-        with tempfile.TemporaryDirectory() as directory:
-            path = os.path.join(directory, "adobe.csv")
-            write_adobe_stock_csv(results, STOCK_PROFILE, "test-model", path)
-
-            with open(path, encoding="utf-8", newline="") as handle:
-                rows = list(csv.reader(handle))
-
-        self.assertEqual(
-            rows, [["Filename", "Title", "Keywords", "Category", "Releases"]]
-        )
-
-    def test_csv_can_be_written_to_standard_output(self):
-        stdout = StringIO()
-        with redirect_stdout(stdout):
-            write_adobe_stock_csv(
-                [self._tagged("a.jpg")], STOCK_PROFILE, "test-model", "-"
-            )
-
-        rows = list(csv.reader(StringIO(stdout.getvalue())))
-        self.assertEqual(rows[1], ["a.jpg", "Title", "one, two", "11", ""])
-
-    def test_json_writer_keeps_the_category(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = os.path.join(directory, "tags.json")
-            write_json([self._tagged("a.jpg")], STOCK_PROFILE, "test-model", path)
-
-            with open(path, encoding="utf-8") as handle:
-                document = json.load(handle)
-
-        self.assertEqual(document["photos"][0]["category"], 11)
-
-    def test_duplicate_file_names_are_rejected_for_adobe_stock(self):
-        paths = ["day1/IMG_0001.jpg", "day2/IMG_0001.jpg"]
-
-        with self.assertRaises(ValueError) as ctx:
-            check_paths(get_format(ADOBE_STOCK), paths)
-        self.assertIn("IMG_0001.jpg", str(ctx.exception))
-
-        check_paths(get_format(JSON), paths)
-
-    def test_unknown_format_raises(self):
-        with self.assertRaises(ValueError):
-            get_format("xml")
-
-
-class SummaryTests(unittest.TestCase):
-    def test_summary_counts_tagged_and_failed_photos(self):
-        results = [
-            PhotoResult(path="a.jpg", metadata={"title": "t"}),
-            PhotoResult(path="b.jpg", error="broken"),
-        ]
-        stderr = StringIO()
-        with redirect_stderr(stderr):
-            print_summary(results, STOCK_PROFILE, "-")
-
-        self.assertEqual(
-            stderr.getvalue(),
-            "Tagged 1 photo(s) for the stock target, 1 failed -> standard output\n",
-        )
 
 
 class RunTests(unittest.TestCase):
@@ -950,82 +795,6 @@ class RunTests(unittest.TestCase):
                 document = json.load(handle)
             self.assertEqual(document["target"], GALLERY)
             self.assertEqual(len(document["photos"]), 1)
-
-    def test_run_writes_an_adobe_stock_csv(self):
-        with tempfile.TemporaryDirectory() as directory:
-            photo = write_test_image(os.path.join(directory, "sample.jpg"))
-            output = os.path.join(directory, "adobe.csv")
-            generator = FakeGenerator(
-                metadata={
-                    "title": "Generated title",
-                    "description": "Generated description",
-                    "keywords": ["one", "two"],
-                    "category": 3,
-                }
-            )
-
-            args = build_parser().parse_args(
-                [photo, "missing.jpg", "-f", "adobe-stock", "-o", output, "-q"]
-            )
-            with patch(
-                "photo_tagger.MetadataGenerator", return_value=generator
-            ) as factory:
-                code = run(args)
-
-            self.assertEqual(code, 1)
-            self.assertEqual(
-                factory.call_args.kwargs["categories"], ADOBE_STOCK_CATEGORIES
-            )
-            with open(output, encoding="utf-8", newline="") as handle:
-                rows = list(csv.reader(handle))
-            self.assertEqual(
-                rows,
-                [
-                    ["Filename", "Title", "Keywords", "Category", "Releases"],
-                    ["sample.jpg", "Generated title", "one, two", "3", ""],
-                ],
-            )
-
-    def test_run_rejects_duplicate_file_names_before_tagging(self):
-        with tempfile.TemporaryDirectory() as directory:
-            photos = []
-            for day in ("day1", "day2"):
-                os.makedirs(os.path.join(directory, day))
-                photos.append(
-                    write_test_image(os.path.join(directory, day, "IMG_0001.jpg"))
-                )
-            generator = FakeGenerator()
-
-            with self.assertRaises(ValueError):
-                self._run(
-                    [*photos, "-f", "adobe-stock", "-o", "-", "--quiet"], generator
-                )
-
-            self.assertEqual(generator.calls, [])
-
-    def test_run_writes_the_default_output_for_the_format(self):
-        with tempfile.TemporaryDirectory() as directory:
-            photo = write_test_image(os.path.join(directory, "sample.jpg"))
-            previous = os.getcwd()
-            os.chdir(directory)
-            try:
-                code = self._run(
-                    [photo, "-f", "adobe-stock", "--quiet"],
-                    FakeGenerator(
-                        metadata={
-                            "title": "t",
-                            "description": "d",
-                            "keywords": ["k"],
-                            "category": 1,
-                        }
-                    ),
-                )
-            finally:
-                os.chdir(previous)
-
-            self.assertEqual(code, 0)
-            self.assertTrue(os.path.isfile(os.path.join(directory, "tags.csv")))
-            self.assertFalse(os.path.exists(os.path.join(directory, "tags.json")))
 
     def test_run_reports_failure_exit_code(self):
         with tempfile.TemporaryDirectory() as directory:

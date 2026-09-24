@@ -39,7 +39,10 @@
         "blue sky",
         "atlantic",
         "shoreline"
-      ]
+      ],
+      "categories": {
+        "adobe_stock": 11
+      }
     }
   ]
 }

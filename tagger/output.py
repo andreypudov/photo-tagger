@@ -38,8 +38,8 @@ def build_document(
                 "description": result.metadata["description"],
                 "keywords": result.metadata["keywords"],
             }
-            if "category" in result.metadata:
-                photo["category"] = result.metadata["category"]
+            if "categories" in result.metadata:
+                photo["categories"] = result.metadata["categories"]
             photos.append(photo)
         else:
             errors.append({"file": result.path, "error": result.error})
@@ -58,8 +58,26 @@ def build_document(
     return document
 
 
+def write_document(document: dict, path: str, indent: int = 2) -> None:
+    """Serialize the document to a file or to standard output.
+
+    Args:
+        document: Document returned by build_document
+        path: Destination file, or "-" for standard output
+        indent: Number of spaces used for indentation
+
+    Raises:
+        RuntimeError: If the file cannot be written
+    """
+    payload = json.dumps(document, indent=indent, ensure_ascii=False)
+    write_text(payload + "\n", path)
+
+
 def write_text(payload: str, path: str) -> None:
     """Write text to a file or to standard output.
+
+    The text is written unchanged, without newline translation, so that
+    formats with their own line endings such as CSV keep them.
 
     Args:
         payload: Text to write
@@ -81,30 +99,13 @@ def write_text(payload: str, path: str) -> None:
         raise RuntimeError(f"Unable to write {path}: {e}") from e
 
 
-def write_document(document: dict, path: str, indent: int = 2) -> None:
-    """Serialize the document to a file or to standard output.
-
-    Args:
-        document: Document returned by build_document
-        path: Destination file, or "-" for standard output
-        indent: Number of spaces used for indentation
-
-    Raises:
-        RuntimeError: If the file cannot be written
-    """
-    payload = json.dumps(document, indent=indent, ensure_ascii=False)
-    write_text(payload + "\n", path)
-
-
-def print_summary(
-    results: list[PhotoResult], profile: TargetProfile, path: str
-) -> None:
+def print_summary(document: dict, path: str) -> None:
     """Print a one line summary of the run to standard error."""
-    tagged = sum(1 for result in results if result.succeeded)
-    failed = len(results) - tagged
+    tagged = len(document.get("photos", []))
+    failed = len(document.get("errors", []))
     destination = "standard output" if path == STDOUT_PATH else path
 
-    summary = f"Tagged {tagged} photo(s) for the {profile.name} target"
+    summary = f"Tagged {tagged} photo(s) for the {document['target']} target"
     if failed:
         summary += f", {failed} failed"
 

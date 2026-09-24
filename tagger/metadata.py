@@ -1,3 +1,4 @@
+from .categories import CategorySet
 from .targets import TargetProfile
 
 ELLIPSIS = "..."
@@ -64,19 +65,47 @@ def normalize_keywords(keywords, max_keywords: int) -> list[str]:
     return cleaned
 
 
+def normalize_category(raw: dict, category_set: CategorySet) -> int:
+    """Return the category code chosen from a set, after validating it.
+
+    Args:
+        raw: Parsed JSON payload returned by the model
+        category_set: Category list the model had to choose from
+
+    Returns:
+        The chosen category code
+
+    Raises:
+        ValueError: If the code is missing or not part of the set
+    """
+    category = raw.get(category_set.field)
+    # bool is an int subclass and 11.0 == 11, so check the type as well.
+    if (
+        not isinstance(category, int)
+        or isinstance(category, bool)
+        or category not in category_set.choices
+    ):
+        raise ValueError(
+            f"Model response has an unknown {category_set.label} category: {category}"
+        )
+    return category
+
+
 def normalize_metadata(
-    raw: dict, profile: TargetProfile, categories: dict[int, str] | None = None
+    raw: dict,
+    profile: TargetProfile,
+    category_sets: tuple[CategorySet, ...] = (),
 ) -> dict:
     """Validate and normalize the metadata returned by the model.
 
     Args:
         raw: Parsed JSON payload returned by the model
         profile: Target profile describing the destination
-        categories: Category codes the model had to choose from, if any
+        category_sets: Category lists the model had to choose from
 
     Returns:
-        A mapping with the title, description and keywords keys, plus the
-        category key when categories were requested
+        A mapping with the title, description and keywords keys, plus a
+        categories mapping of set name to code when category sets were given
 
     Raises:
         ValueError: If a required field is missing or empty
@@ -103,15 +132,10 @@ def normalize_metadata(
         "keywords": keywords,
     }
 
-    if categories:
-        category = raw.get("category")
-        # bool is an int subclass and 11.0 == 11, so check the type as well.
-        if (
-            not isinstance(category, int)
-            or isinstance(category, bool)
-            or category not in categories
-        ):
-            raise ValueError(f"Model response has an unknown category: {category}")
-        metadata["category"] = category
+    if category_sets:
+        metadata["categories"] = {
+            category_set.name: normalize_category(raw, category_set)
+            for category_set in category_sets
+        }
 
     return metadata

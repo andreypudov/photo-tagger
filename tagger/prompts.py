@@ -1,3 +1,4 @@
+from .categories import CategorySet
 from .image_loader import Photo
 from .targets import TargetProfile
 
@@ -5,13 +6,13 @@ SCHEMA_NAME = "photo_metadata"
 
 
 def build_system_prompt(
-    profile: TargetProfile, categories: dict[int, str] | None = None
+    profile: TargetProfile, category_sets: tuple[CategorySet, ...] = ()
 ) -> str:
     """Build the system prompt that defines the voice for a target.
 
     Args:
         profile: Target profile describing the destination
-        categories: Category codes the model has to choose from, if any
+        category_sets: Category lists the model has to choose from
 
     Returns:
         The system prompt text
@@ -35,12 +36,15 @@ def build_system_prompt(
         "- Write in English."
     )
 
-    if categories:
-        choices = "\n".join(f"{code}. {name}" for code, name in categories.items())
+    for category_set in category_sets:
+        choices = "\n".join(
+            f"{code}. {name}" for code, name in category_set.choices.items()
+        )
         prompt += (
             "\n\n"
-            "Also choose the single category that best matches the main "
-            "subject of the photograph and return its number:\n"
+            f"Choose the single {category_set.label} category that best matches "
+            "the main subject of the photograph and return its number in "
+            f"{category_set.field}:\n"
             f"{choices}"
         )
 
@@ -48,21 +52,23 @@ def build_system_prompt(
 
 
 def build_user_prompt(
-    photo: Photo, profile: TargetProfile, categories: dict[int, str] | None = None
+    photo: Photo,
+    profile: TargetProfile,
+    category_sets: tuple[CategorySet, ...] = (),
 ) -> str:
     """Build the per-photo instruction sent alongside the image.
 
     Args:
         photo: The prepared photo
         profile: Target profile describing the destination
-        categories: Category codes the model has to choose from, if any
+        category_sets: Category lists the model has to choose from
 
     Returns:
         The user prompt text
     """
     fields = (
-        "a title, a description, keywords and a category"
-        if categories
+        "a title, a description, keywords and categories"
+        if category_sets
         else "a title, a description and keywords"
     )
     lines = [
@@ -98,13 +104,13 @@ def describe_orientation(width: int, height: int) -> str | None:
 
 
 def build_response_schema(
-    profile: TargetProfile, categories: dict[int, str] | None = None
+    profile: TargetProfile, category_sets: tuple[CategorySet, ...] = ()
 ) -> dict:
     """Build the strict JSON schema requested from the model.
 
     Args:
         profile: Target profile describing the destination
-        categories: Category codes the model has to choose from, if any
+        category_sets: Category lists the model has to choose from
 
     Returns:
         A JSON schema definition compatible with structured outputs
@@ -131,13 +137,16 @@ def build_response_schema(
     }
     required = ["title", "description", "keywords"]
 
-    if categories:
-        properties["category"] = {
+    for category_set in category_sets:
+        properties[category_set.field] = {
             "type": "integer",
-            "description": "Number of the category that best matches the photo",
-            "enum": list(categories),
+            "description": (
+                f"Number of the {category_set.label} category that best "
+                "matches the photo"
+            ),
+            "enum": list(category_set.choices),
         }
-        required.append("category")
+        required.append(category_set.field)
 
     return {
         "name": SCHEMA_NAME,

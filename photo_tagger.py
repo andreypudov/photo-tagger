@@ -11,12 +11,13 @@ from tagger.openai_client import (
     MetadataGenerator,
     resolve_default_model,
 )
-from tagger.formats import FORMATS, FORMAT_NAMES, JSON, check_paths, get_format
-from tagger.output import STDOUT_PATH, print_summary
+from tagger.output import STDOUT_PATH, build_document, print_summary, write_document
 from tagger.tagging import DEFAULT_JOBS, collect_photo_paths, tag_photos
 from tagger.targets import STOCK, TARGET_NAMES, get_profile
 
 __version__ = "0.1.0"
+
+DEFAULT_OUTPUT = "tags.json"
 
 
 def build_parser():
@@ -26,8 +27,7 @@ def build_parser():
         epilog="Examples:\n"
         "  %(prog)s photo.jpg\n"
         "  %(prog)s --target gallery portrait.jpg landscape.tif -o labels.json\n"
-        "  %(prog)s --target stock ./shoot -o stock.json\n"
-        "  %(prog)s --format adobe-stock ./shoot -o adobe.csv",
+        "  %(prog)s --target stock ./shoot -o stock.json",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
@@ -45,21 +45,12 @@ def build_parser():
         "'gallery' for museum and exhibition wall labels (default: %(default)s)",
     )
     parser.add_argument(
-        "-f",
-        "--format",
-        choices=FORMAT_NAMES,
-        default=JSON,
-        help="Output format: "
-        + ", ".join(f"'{name}' for the {f.summary}" for name, f in FORMATS.items())
-        + " (default: %(default)s)",
-    )
-    parser.add_argument(
         "-o",
         "--output",
         metavar="PATH",
-        default=None,
-        help=f"File to write, or '{STDOUT_PATH}' for standard output "
-        "(default: tags.json or tags.csv, depending on --format)",
+        default=DEFAULT_OUTPUT,
+        help=f"JSON file to write, or '{STDOUT_PATH}' for standard output "
+        "(default: %(default)s)",
     )
     parser.add_argument(
         "-m",
@@ -120,8 +111,7 @@ def build_parser():
         type=int,
         default=2,
         metavar="SPACES",
-        help="Indentation of the generated JSON, ignored by other formats "
-        "(default: %(default)s)",
+        help="Indentation of the generated JSON (default: %(default)s)",
     )
     parser.add_argument(
         "-q",
@@ -192,10 +182,7 @@ def run(args) -> int:
     validate_args(args)
 
     profile = get_profile(args.target)
-    output_format = get_format(args.format)
-    output = args.output or output_format.default_output
     paths = collect_photo_paths(args.files)
-    check_paths(output_format, paths)
 
     generator = MetadataGenerator(
         model=args.model,
@@ -203,7 +190,6 @@ def run(args) -> int:
         timeout=args.timeout,
         max_retries=args.retries,
         detail=args.detail,
-        categories=output_format.categories,
     )
 
     results = tag_photos(
@@ -216,10 +202,11 @@ def run(args) -> int:
         jobs=args.jobs,
     )
 
-    output_format.write(results, profile, args.model, output, args.indent)
+    document = build_document(results, profile, args.model)
+    write_document(document, args.output, indent=args.indent)
 
     if not args.quiet:
-        print_summary(results, profile, output)
+        print_summary(document, args.output)
 
     return 0 if all(result.succeeded for result in results) else 1
 

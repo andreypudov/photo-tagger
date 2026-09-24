@@ -21,7 +21,10 @@
         "romanticism",
         "natural light",
         "verticality"
-      ]
+      ],
+      "categories": {
+        "adobe_stock": 11
+      }
     }
   ]
 }
