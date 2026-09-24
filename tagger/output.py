@@ -31,15 +31,16 @@ def build_document(
 
     for result in results:
         if result.succeeded:
-            photos.append(
-                {
-                    "file": result.path,
-                    "filename": os.path.basename(result.path),
-                    "title": result.metadata["title"],
-                    "description": result.metadata["description"],
-                    "keywords": result.metadata["keywords"],
-                }
-            )
+            photo = {
+                "file": result.path,
+                "filename": os.path.basename(result.path),
+                "title": result.metadata["title"],
+                "description": result.metadata["description"],
+                "keywords": result.metadata["keywords"],
+            }
+            if "category" in result.metadata:
+                photo["category"] = result.metadata["category"]
+            photos.append(photo)
         else:
             errors.append({"file": result.path, "error": result.error})
 
@@ -57,6 +58,29 @@ def build_document(
     return document
 
 
+def write_text(payload: str, path: str) -> None:
+    """Write text to a file or to standard output.
+
+    Args:
+        payload: Text to write
+        path: Destination file, or "-" for standard output
+
+    Raises:
+        RuntimeError: If the file cannot be written
+    """
+    if path == STDOUT_PATH:
+        sys.stdout.write(payload)
+        return
+
+    directory = os.path.dirname(os.path.abspath(path))
+    try:
+        os.makedirs(directory, exist_ok=True)
+        with open(path, "w", encoding="utf-8", newline="") as handle:
+            handle.write(payload)
+    except OSError as e:
+        raise RuntimeError(f"Unable to write {path}: {e}") from e
+
+
 def write_document(document: dict, path: str, indent: int = 2) -> None:
     """Serialize the document to a file or to standard output.
 
@@ -69,28 +93,18 @@ def write_document(document: dict, path: str, indent: int = 2) -> None:
         RuntimeError: If the file cannot be written
     """
     payload = json.dumps(document, indent=indent, ensure_ascii=False)
-
-    if path == STDOUT_PATH:
-        print(payload)
-        return
-
-    directory = os.path.dirname(os.path.abspath(path))
-    try:
-        os.makedirs(directory, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as handle:
-            handle.write(payload)
-            handle.write("\n")
-    except OSError as e:
-        raise RuntimeError(f"Unable to write {path}: {e}") from e
+    write_text(payload + "\n", path)
 
 
-def print_summary(document: dict, path: str) -> None:
+def print_summary(
+    results: list[PhotoResult], profile: TargetProfile, path: str
+) -> None:
     """Print a one line summary of the run to standard error."""
-    tagged = len(document.get("photos", []))
-    failed = len(document.get("errors", []))
+    tagged = sum(1 for result in results if result.succeeded)
+    failed = len(results) - tagged
     destination = "standard output" if path == STDOUT_PATH else path
 
-    summary = f"Tagged {tagged} photo(s) for the {document['target']} target"
+    summary = f"Tagged {tagged} photo(s) for the {profile.name} target"
     if failed:
         summary += f", {failed} failed"
 

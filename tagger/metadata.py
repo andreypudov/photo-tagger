@@ -64,15 +64,19 @@ def normalize_keywords(keywords, max_keywords: int) -> list[str]:
     return cleaned
 
 
-def normalize_metadata(raw: dict, profile: TargetProfile) -> dict:
+def normalize_metadata(
+    raw: dict, profile: TargetProfile, categories: dict[int, str] | None = None
+) -> dict:
     """Validate and normalize the metadata returned by the model.
 
     Args:
         raw: Parsed JSON payload returned by the model
         profile: Target profile describing the destination
+        categories: Category codes the model had to choose from, if any
 
     Returns:
-        A mapping with the title, description and keywords keys
+        A mapping with the title, description and keywords keys, plus the
+        category key when categories were requested
 
     Raises:
         ValueError: If a required field is missing or empty
@@ -93,8 +97,21 @@ def normalize_metadata(raw: dict, profile: TargetProfile) -> dict:
     if not keywords:
         raise ValueError("Model response is missing keywords")
 
-    return {
+    metadata = {
         "title": truncate_text(title, profile.title_max_chars),
         "description": truncate_text(description, profile.description_max_chars),
         "keywords": keywords,
     }
+
+    if categories:
+        category = raw.get("category")
+        # bool is an int subclass and 11.0 == 11, so check the type as well.
+        if (
+            not isinstance(category, int)
+            or isinstance(category, bool)
+            or category not in categories
+        ):
+            raise ValueError(f"Model response has an unknown category: {category}")
+        metadata["category"] = category
+
+    return metadata

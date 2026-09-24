@@ -60,7 +60,10 @@ def resolve_api_key(api_key: str | None = None) -> str:
 
 
 def build_messages(
-    photo: Photo, profile: TargetProfile, detail: str = DEFAULT_DETAIL
+    photo: Photo,
+    profile: TargetProfile,
+    detail: str = DEFAULT_DETAIL,
+    categories: dict[int, str] | None = None,
 ) -> list[dict]:
     """Build the chat messages describing a single photo.
 
@@ -68,16 +71,20 @@ def build_messages(
         photo: The prepared photo
         profile: Target profile describing the destination
         detail: Image detail level requested from the model
+        categories: Category codes the model has to choose from, if any
 
     Returns:
         A list of chat messages ready to be sent to the model
     """
     return [
-        {"role": "system", "content": build_system_prompt(profile)},
+        {"role": "system", "content": build_system_prompt(profile, categories)},
         {
             "role": "user",
             "content": [
-                {"type": "text", "text": build_user_prompt(photo, profile)},
+                {
+                    "type": "text",
+                    "text": build_user_prompt(photo, profile, categories),
+                },
                 {
                     "type": "image_url",
                     "image_url": {"url": photo.data_url, "detail": detail},
@@ -87,12 +94,17 @@ def build_messages(
     ]
 
 
-def parse_response_content(content: str | None, profile: TargetProfile) -> dict:
+def parse_response_content(
+    content: str | None,
+    profile: TargetProfile,
+    categories: dict[int, str] | None = None,
+) -> dict:
     """Parse and normalize the JSON payload returned by the model.
 
     Args:
         content: Raw message content returned by the model
         profile: Target profile describing the destination
+        categories: Category codes the model had to choose from, if any
 
     Returns:
         Normalized metadata with title, description and keywords
@@ -108,7 +120,7 @@ def parse_response_content(content: str | None, profile: TargetProfile) -> dict:
     except json.JSONDecodeError as e:
         raise ValueError(f"Model returned malformed JSON: {e}") from e
 
-    return normalize_metadata(payload, profile)
+    return normalize_metadata(payload, profile, categories)
 
 
 class MetadataGenerator:
@@ -121,6 +133,7 @@ class MetadataGenerator:
         timeout: float = DEFAULT_TIMEOUT,
         max_retries: int = DEFAULT_MAX_RETRIES,
         detail: str = DEFAULT_DETAIL,
+        categories: dict[int, str] | None = None,
         client=None,
     ):
         """Create a generator.
@@ -131,6 +144,8 @@ class MetadataGenerator:
             timeout: Per request timeout in seconds
             max_retries: Number of automatic retries on transient failures
             detail: Image detail level, one of "low", "high" or "auto"
+            categories: Category codes the model has to choose from, used by
+                output formats with a category column
             client: Pre-built OpenAI client, mainly used by the tests
 
         Raises:
@@ -138,6 +153,7 @@ class MetadataGenerator:
         """
         self.model = model
         self.detail = detail
+        self.categories = categories or {}
         self._client = client or OpenAI(
             api_key=resolve_api_key(api_key),
             timeout=timeout,
@@ -162,10 +178,10 @@ class MetadataGenerator:
         try:
             response = self._client.chat.completions.create(
                 model=self.model,
-                messages=build_messages(photo, profile, self.detail),
+                messages=build_messages(photo, profile, self.detail, self.categories),
                 response_format={
                     "type": "json_schema",
-                    "json_schema": build_response_schema(profile),
+                    "json_schema": build_response_schema(profile, self.categories),
                 },
             )
         except AuthenticationError as e:
@@ -207,4 +223,4 @@ class MetadataGenerator:
         if choice.finish_reason == "length":
             raise ValueError(f"Model response for {photo.filename} was cut short")
 
-        return parse_response_content(choice.message.content, profile)
+        return parse_response_content(choice.message.content, profile, self.categories)

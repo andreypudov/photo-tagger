@@ -4,14 +4,15 @@
 
 * Overview
 photo-tagger is a small command line utility that writes the metadata a photograph needs before it is published.
-It sends each image to an OpenAI vision model and collects a title, a description and a keyword list into a single JSON file.
+It sends each image to an OpenAI vision model and collects a title, a description and a keyword list into a single JSON file or an Adobe Stock upload CSV.
 
 The same photograph is described differently depending on where it goes, so the tool writes for a chosen target: a microstock listing that has to be found through search, or a gallery wall label that has to be read in front of the print.
 
 * Features
 - Titles, descriptions and keywords generated from the image itself
 - Two writing targets: =stock= for microstock marketplaces, =gallery= for museum and exhibition labels
-- Batch processing of files or whole directories into one JSON document, optionally with concurrent requests
+- Batch processing of files or whole directories into one output file, optionally with concurrent requests
+- Selectable output format: the photo-tagger JSON document or the Adobe Stock metadata upload CSV
 - Any vision capable OpenAI model, chosen per run or through an environment variable
 - EXIF context (camera, lens, exposure, coordinates) forwarded to the model
 - Structured JSON responses validated and normalized against the target limits
@@ -81,6 +82,12 @@ Tag a whole shoot folder and print the result instead of writing a file:
 python photo_tagger.py --target stock ./shoot -o -
 #+end_src
 
+Prepare an Adobe Stock metadata CSV for a shoot:
+
+#+begin_src bash
+python photo_tagger.py --format adobe-stock ./shoot -o adobe.csv
+#+end_src
+
 Tag a large shoot four photos at a time with a different model:
 
 #+begin_src bash
@@ -91,7 +98,8 @@ python photo_tagger.py --model gpt-4.1 --jobs 4 ./shoot -o stock.json
 | Option            | Description                                                                           |
 |-------------------+---------------------------------------------------------------------------------------|
 | =-t=, =--target=  | =stock= or =gallery= (default: =stock=)                                               |
-| =-o=, =--output=  | JSON file to write, or =-= for standard output (default: =tags.json=)                 |
+| =-f=, =--format=  | =json= or =adobe-stock= (default: =json=)                                             |
+| =-o=, =--output=  | File to write, or =-= for standard output (default: =tags.json= or =tags.csv=)        |
 | =-m=, =--model=   | Vision capable OpenAI model, overrides =PHOTO_TAGGER_MODEL= (default: =gpt-4.1-mini=) |
 | =--detail=        | Image detail sent to the model: =low=, =high= or =auto= (default: =high=)             |
 | =-j=, =--jobs=    | Number of photos processed concurrently (default: =1=)                                |
@@ -100,7 +108,7 @@ python photo_tagger.py --model gpt-4.1 --jobs 4 ./shoot -o stock.json
 | =--no-exif=       | Do not read EXIF metadata from the photos                                             |
 | =--timeout=       | Per request timeout in seconds (default: =60=)                                        |
 | =--retries=       | Automatic retries on transient API failures (default: =3=)                            |
-| =--indent=        | Indentation of the generated JSON (default: =2=)                                      |
+| =--indent=        | Indentation of the generated JSON, ignored by other formats (default: =2=)            |
 | =-q=, =--quiet=   | Do not print progress information                                                     |
 
 The model has to accept image input and structured JSON output.
@@ -121,8 +129,11 @@ The title is an artwork title rather than a search phrase, and the description i
 The whole series is imagined hanging in one exhibition room, so each description points to what distinguishes its photograph from the others rather than restating the theme they share.
 Keywords stay curatorial, covering genre, motif and formal qualities.
 
-* Output Format
-The tool writes one JSON document per run:
+* Output Formats
+The =--format= option selects how the results are written.
+
+** json
+The default format: one JSON document per run.
 
 #+begin_src json
 {
@@ -142,7 +153,28 @@ The tool writes one JSON document per run:
 #+end_src
 
 An =errors= array is added when a photo could not be tagged, listing the file and the reason.
+When the run also asked for a category, each photo carries a numeric =category= field.
 =samples/tags.stock.json= and =samples/tags.gallery.json= are illustrative documents showing the shape of both targets.
+
+** adobe-stock
+A CSV ready for the Adobe Stock metadata upload dialog, one row per tagged photo:
+
+#+begin_src csv
+Filename,Title,Keywords,Category,Releases
+lighthouse.jpg,Lighthouse on rocky coastline at sunrise with calm sea,"lighthouse, coastline, sunrise, rocky shore",11,
+#+end_src
+
+| Column   | Content                                                                         |
+|----------+---------------------------------------------------------------------------------|
+| Filename | File name of the photo, including the extension                                 |
+| Title    | The generated title, at most 200 characters                                     |
+| Keywords | Comma separated keywords ordered by relevance, at most 49                       |
+| Category | Adobe Stock category code (1 to 21) chosen by the model                         |
+| Releases | Always empty                                                                    |
+
+Photos that could not be tagged are left out of the CSV and reported on standard error.
+Adobe Stock matches rows to uploads by file name alone, so a run that contains two photos with the same file name is rejected before any API call.
+The description is not part of the Adobe Stock CSV. The =stock= target is the one that writes the literal, search friendly titles Adobe Stock expects.
 
 * Useful Scripts
 - =scripts/photo_resize.sh= downscales a folder of photos into a working directory before tagging.
@@ -154,7 +186,7 @@ The program:
 2. Decodes each image, reads a small subset of its EXIF data, rotates it upright according to its EXIF orientation and encodes a downscaled JPEG as a data URL.
 3. Builds a target specific system prompt and asks the model for a strict JSON response.
 4. Rejects refusals and truncated responses, then normalizes the result: whitespace collapsed, titles and descriptions truncated to the target limits, keywords lower cased, deduplicated and capped.
-5. Collects every photo into one document and writes it to disk.
+5. Collects every photo into one file in the selected format and writes it to disk.
 
 Only the downscaled copy is sent to the API; the original files are never modified.
 
