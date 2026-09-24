@@ -191,6 +191,15 @@ class AdobeStockRowTests(unittest.TestCase):
 
         self.assertLessEqual(len(row["Title"]), 200)
 
+    def test_location_does_not_change_the_row(self):
+        entry = make_entry(
+            location={"given": "Lisbon, Portugal", "detected": "Belém Tower"}
+        )
+
+        self.assertEqual(
+            build_adobe_stock_row(entry), build_adobe_stock_row(make_entry())
+        )
+
     def test_missing_category_leaves_the_cell_empty(self):
         entry = make_entry()
         del entry["categories"]
@@ -253,32 +262,71 @@ class ExportCommandTests(unittest.TestCase):
     def tearDown(self):
         self._directory.cleanup()
 
-    def test_format_defaults_to_adobe_stock(self):
-        args = photo_export.build_parser().parse_args(["tags.json"])
+    def _usage_error(self, argv) -> str:
+        stderr = StringIO()
+        with redirect_stderr(stderr), self.assertRaises(SystemExit) as ctx:
+            photo_export.build_parser().parse_args(argv)
+        self.assertEqual(ctx.exception.code, 2)
+        return stderr.getvalue()
+
+    def test_required_flags_are_parsed(self):
+        args = photo_export.build_parser().parse_args(
+            ["--format", "adobe-stock", "--output", "adobe.csv", "tags.json"]
+        )
 
         self.assertEqual(args.format, ADOBE_STOCK)
-        self.assertIsNone(args.output)
+        self.assertEqual(args.output, "adobe.csv")
+        self.assertEqual(args.input, "tags.json")
+
+    def test_format_is_required(self):
+        self.assertIn("--format", self._usage_error(["-o", "a.csv", "tags.json"]))
+
+    def test_output_is_required(self):
+        self.assertIn("--output", self._usage_error(["-f", "adobe-stock", "tags.json"]))
+
+    def test_input_is_required(self):
+        self._usage_error(["-f", "adobe-stock", "-o", "a.csv"])
 
     def test_unknown_format_is_rejected(self):
-        with redirect_stderr(StringIO()), self.assertRaises(SystemExit):
-            photo_export.build_parser().parse_args(["-f", "xml", "tags.json"])
+        self._usage_error(["-f", "xml", "-o", "a.csv", "tags.json"])
 
-    def test_default_output_is_written_next_to_the_input(self):
+    def test_help_lists_required_arguments_separately(self):
+        stdout = StringIO()
+        with redirect_stdout(stdout), self.assertRaises(SystemExit):
+            photo_export.build_parser().parse_args(["-h"])
+
+        help_text = stdout.getvalue()
+        required = help_text[help_text.index("required arguments:") :]
+        self.assertIn("--format", required)
+        self.assertIn("--output", required)
+        self.assertNotIn("--quiet", required)
+
+    def test_version_flag_is_available(self):
+        stdout = StringIO()
+        with redirect_stdout(stdout), self.assertRaises(SystemExit):
+            photo_export.build_parser().parse_args(["--version"])
+
+        self.assertIn(photo_export.__version__, stdout.getvalue())
+
+    def test_output_is_written(self):
         path = write_json(self.directory, make_document(make_entry()))
+        output = os.path.join(self.directory, "nested", "adobe.csv")
 
-        code, _, stderr = export([path])
+        code, _, stderr = export([path, "-f", "adobe-stock", "-o", output])
 
-        output = os.path.join(self.directory, "tags.adobe-stock.csv")
         self.assertEqual(code, 0)
+        self.assertEqual(read_rows(output)[0], HEADER)
         self.assertEqual(read_rows(output)[1][0], "lighthouse.jpg")
         self.assertIn("Exported 1 photo(s) as adobe-stock", stderr)
         self.assertNotIn("Warning", stderr)
 
-    def test_explicit_output_is_used(self):
+    def test_existing_output_is_replaced(self):
         path = write_json(self.directory, make_document(make_entry()))
-        output = os.path.join(self.directory, "nested", "adobe.csv")
+        output = os.path.join(self.directory, "adobe.csv")
+        with open(output, "w", encoding="utf-8") as handle:
+            handle.write("stale")
 
-        code, _, _ = export([path, "-o", output])
+        code, _, _ = export([path, "-f", "adobe-stock", "-o", output])
 
         self.assertEqual(code, 0)
         self.assertEqual(read_rows(output)[0], HEADER)
@@ -286,7 +334,7 @@ class ExportCommandTests(unittest.TestCase):
     def test_output_can_go_to_standard_output(self):
         path = write_json(self.directory, make_document(make_entry()))
 
-        code, stdout, stderr = export([path, "-o", "-", "--quiet"])
+        code, stdout, stderr = export([path, "-f", "adobe-stock", "-o", "-", "--quiet"])
 
         self.assertEqual(code, 0)
         self.assertEqual(list(csv.reader(StringIO(stdout)))[0], HEADER)
@@ -302,7 +350,7 @@ class ExportCommandTests(unittest.TestCase):
         )
         path = write_json(self.directory, document)
 
-        code, stdout, stderr = export([path, "-o", "-"])
+        code, stdout, stderr = export([path, "-f", "adobe-stock", "-o", "-"])
 
         self.assertEqual(code, 0)
         self.assertEqual(len(list(csv.reader(StringIO(stdout)))), 3)
@@ -315,7 +363,7 @@ class ExportCommandTests(unittest.TestCase):
         del entry["categories"]
         path = write_json(self.directory, make_document(entry))
 
-        _, _, stderr = export([path, "-o", "-", "-q"])
+        _, _, stderr = export([path, "-f", "adobe-stock", "-o", "-", "-q"])
 
         self.assertEqual(stderr, "")
 
@@ -324,14 +372,22 @@ class ExportCommandTests(unittest.TestCase):
         path = write_json(self.directory, document)
         output = os.path.join(self.directory, "adobe.csv")
 
-        code, _, stderr = export([path, "-o", output])
+        code, _, stderr = export([path, "-f", "adobe-stock", "-o", output])
 
         self.assertEqual(code, 2)
         self.assertIn("IMG_1.jpg", stderr)
         self.assertFalse(os.path.exists(output))
 
     def test_missing_input_exits_with_2(self):
-        code, _, stderr = export([os.path.join(self.directory, "missing.json")])
+        code, _, stderr = export(
+            [
+                os.path.join(self.directory, "missing.json"),
+                "-f",
+                "adobe-stock",
+                "-o",
+                "-",
+            ]
+        )
 
         self.assertEqual(code, 2)
         self.assertIn("not found", stderr)
@@ -339,7 +395,7 @@ class ExportCommandTests(unittest.TestCase):
     def test_invalid_input_exits_with_2(self):
         path = write_json(self.directory, {"photos": [{"filename": "a.jpg"}]})
 
-        code, _, stderr = export([path])
+        code, _, stderr = export([path, "-f", "adobe-stock", "-o", "-"])
 
         self.assertEqual(code, 2)
         self.assertIn("Error:", stderr)
@@ -347,7 +403,9 @@ class ExportCommandTests(unittest.TestCase):
     def test_unwritable_output_exits_with_1(self):
         path = write_json(self.directory, make_document(make_entry()))
 
-        code, _, stderr = export([path, "-o", os.path.join(path, "adobe.csv")])
+        code, _, stderr = export(
+            [path, "-f", "adobe-stock", "-o", os.path.join(path, "adobe.csv")]
+        )
 
         self.assertEqual(code, 1)
         self.assertIn("Unable to write", stderr)
@@ -381,13 +439,19 @@ class TagThenExportTests(unittest.TestCase):
             photo = os.path.join(directory, "lake.jpg")
             Image.new("RGB", (64, 48), (40, 90, 160)).save(photo, format="JPEG")
             tags = os.path.join(directory, "tags.json")
+            csv_path = os.path.join(directory, "adobe.csv")
 
             generator = MetadataGenerator(client=client)
             with (
                 patch("photo_tagger.MetadataGenerator", return_value=generator),
                 redirect_stderr(StringIO()),
             ):
-                self.assertEqual(photo_tagger.main([photo, "-o", tags, "-q"]), 0)
+                self.assertEqual(
+                    photo_tagger.main(
+                        ["-t", "stock", "--no-location", "-o", tags, "-q", photo]
+                    ),
+                    0,
+                )
 
             with open(tags, encoding="utf-8") as handle:
                 document = json.load(handle)
@@ -396,10 +460,10 @@ class TagThenExportTests(unittest.TestCase):
             with patch.object(
                 MetadataGenerator, "generate", side_effect=AssertionError
             ):
-                code, _, _ = export([tags, "-q"])
+                code, _, _ = export([tags, "-f", "adobe-stock", "-o", csv_path, "-q"])
 
             self.assertEqual(code, 0)
-            rows = read_rows(os.path.join(directory, "tags.adobe-stock.csv"))
+            rows = read_rows(csv_path)
 
         self.assertEqual(len(requests), 1)
         self.assertEqual(

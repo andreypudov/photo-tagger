@@ -14,6 +14,7 @@ The same photograph is described differently depending on where it goes, so the 
 - Two writing targets: =stock= for microstock marketplaces, =gallery= for museum and exhibition labels
 - Batch processing of files or whole directories into one JSON document, optionally with concurrent requests
 - Adobe Stock category chosen for every photo and stored alongside the text
+- Album location that the model uses in titles and keywords, refined to a recognizable landmark or site when it is certain, or an explicit =--no-location= for studio and product work
 - Export of a JSON document into destination specific files, currently the Adobe Stock metadata CSV, as often as needed without new API calls
 - Any vision capable OpenAI model, chosen per run or through an environment variable
 - EXIF context (camera, lens, exposure, coordinates) forwarded to the model
@@ -66,41 +67,56 @@ export PHOTO_TAGGER_MODEL=gpt-4.1
 #+end_src
 
 * Usage
-Tag a single photo for microstock:
+Tagging and export are two steps.
+=photo_tagger.py= sends the photos to the API once and writes everything into a JSON document; =photo_export.py= turns that document into as many destination files as needed, without calling the API again.
+
+Tag an album shot in one place for microstock, so that titles and keywords can name it:
 
 #+begin_src bash
-python photo_tagger.py photo.jpg
+python photo_tagger.py -t stock -l "Madeira, Portugal" -o madeira.json ./madeira
 #+end_src
 
-Tag several photos as exhibition wall labels:
+Convert the result into an Adobe Stock metadata CSV:
 
 #+begin_src bash
-python photo_tagger.py --target gallery portrait.jpg landscape.tif -o labels.json
+python photo_export.py -f adobe-stock -o madeira.csv madeira.json
 #+end_src
 
-Tag a whole shoot folder and print the result instead of writing a file:
+Tag studio photos, which have no meaningful location, as exhibition wall labels:
 
 #+begin_src bash
-python photo_tagger.py --target stock ./shoot -o -
+python photo_tagger.py -t gallery --no-location -o labels.json portrait.jpg still.tif
 #+end_src
 
-Tag a large shoot four photos at a time with a different model:
+Print the result instead of writing a file:
 
 #+begin_src bash
-python photo_tagger.py --model gpt-4.1 --jobs 4 ./shoot -o stock.json
+python photo_tagger.py -t stock --no-location -o - photo.jpg
 #+end_src
 
-Convert the result into an Adobe Stock metadata CSV, written to =tags.adobe-stock.csv=:
+Re-tag an album four photos at a time with a different model, replacing the previous result:
 
 #+begin_src bash
-python photo_export.py tags.json
+python photo_tagger.py -t stock -l "Lisbon, Portugal" -o lisbon.json --model gpt-4.1 --jobs 4 --force ./lisbon
 #+end_src
 
-** Options
+** Tagging Options
+=python photo_tagger.py -t TARGET -o PATH (-l PLACE | --no-location) [options] FILE ...=
+
+*** Required
+| Option             | Description                                                                                      |
+|--------------------+--------------------------------------------------------------------------------------------------|
+| =FILE ...=         | Photos to tag, or directories containing photos                                                  |
+| =-t=, =--target=   | =stock= or =gallery=                                                                             |
+| =-o=, =--output=   | JSON file to write, or =-= for standard output; an existing file is only replaced with =--force= |
+| =-l=, =--location= | Where the whole photo set was taken, e.g. ="Lisbon, Portugal"=                                   |
+| =--no-location=    | The photo set has no meaningful location; use instead of =--location=                            |
+
+Exactly one of =--location= and =--no-location= has to be given, so that every run decides about the location on purpose.
+
+*** Optional
 | Option            | Description                                                                           |
 |-------------------+---------------------------------------------------------------------------------------|
-| =-t=, =--target=  | =stock= or =gallery= (default: =stock=)                                               |
-| =-o=, =--output=  | JSON file to write, or =-= for standard output (default: =tags.json=)                 |
 | =-m=, =--model=   | Vision capable OpenAI model, overrides =PHOTO_TAGGER_MODEL= (default: =gpt-4.1-mini=) |
 | =--detail=        | Image detail sent to the model: =low=, =high= or =auto= (default: =high=)             |
 | =-j=, =--jobs=    | Number of photos processed concurrently (default: =1=)                                |
@@ -110,25 +126,37 @@ python photo_export.py tags.json
 | =--timeout=       | Per request timeout in seconds (default: =60=)                                        |
 | =--retries=       | Automatic retries on transient API failures (default: =3=)                            |
 | =--indent=        | Indentation of the generated JSON (default: =2=)                                      |
+| =--force=         | Replace the output file if it already exists                                          |
 | =-q=, =--quiet=   | Do not print progress information                                                     |
+| =-h=, =--help=    | Show the help message and exit                                                        |
+| =-v=, =--version= | Show the version and exit                                                             |
 
 The model has to accept image input and structured JSON output.
 =--detail low= is considerably cheaper and faster, at the cost of fine detail such as small text or distant subjects.
 Raise =--jobs= to speed up large batches; requests that hit the account rate limit are retried automatically.
+The tagging document is the result of paid API calls, so an existing output file is never replaced without =--force=; the check happens before any photo is sent.
 
-Exit codes: =0= when every photo was tagged, =1= when at least one photo failed or the API was unreachable, =2= on invalid arguments or unreadable files, =130= on interrupt.
+Exit codes: =0= when every photo was tagged, =1= when at least one photo failed or the API was unreachable, =2= on invalid arguments, unreadable files or an existing output file, =130= on interrupt.
 A rejected API key or an unknown model stops the run at the first photo instead of failing every photo in turn.
 
 ** Export Options
-=photo_export.py TAGS_JSON= reads a document written by =photo_tagger.py=.
+=python photo_export.py -f FORMAT -o PATH [options] TAGS_JSON=
 
-| Option           | Description                                                                                     |
-|------------------+-------------------------------------------------------------------------------------------------|
-| =-f=, =--format= | Format to write: =adobe-stock= (default: =adobe-stock=)                                         |
-| =-o=, =--output= | File to write, or =-= for standard output (default: =tags.adobe-stock.csv= next to =tags.json=) |
-| =-q=, =--quiet=  | Do not print warnings and the summary                                                           |
+*** Required
+| Option           | Description                                                             |
+|------------------+-------------------------------------------------------------------------|
+| =TAGS_JSON=      | JSON document written by =photo_tagger.py=                              |
+| =-f=, =--format= | Format to write: =adobe-stock=                                          |
+| =-o=, =--output= | File to write, or =-= for standard output; an existing file is replaced |
 
-Exit codes: =0= on success, =1= when the output cannot be written, =2= when the input is missing or not a photo-tagger document, or cannot be represented in the format.
+*** Optional
+| Option            | Description                           |
+|-------------------+---------------------------------------|
+| =-q=, =--quiet=   | Do not print warnings and the summary |
+| =-h=, =--help=    | Show the help message and exit        |
+| =-v=, =--version= | Show the version and exit             |
+
+Exit codes: =0= on success, =1= when the output cannot be written, =2= on invalid arguments, a missing input, a file that is not a photo-tagger document, or a document the format cannot represent.
 
 * Targets
 ** stock
@@ -155,15 +183,37 @@ The tool writes one JSON document per run:
       "filename": "lighthouse.jpg",
       "title": "Keeper of the Morning Tide",
       "description": "A lighthouse stands on a granite headland as the first morning light reaches the rock.",
-      "keywords": ["seascape", "solitude", "morning light"],
-      "categories": {"adobe_stock": 11}
+      "keywords": ["seascape", "solitude", "morning light", "cornwall", "england"],
+      "categories": {"adobe_stock": 11},
+      "location": {"given": "Cornwall, England", "detected": "Godrevy Lighthouse"}
     }
   ]
 }
 #+end_src
 
 =categories= holds the code the model chose from each destination's category list; =adobe_stock= is one of the 21 Adobe Stock categories.
+=location= is present only when =--location= was given: =given= is the value passed on the command line, =detected= the more specific place the model recognized in the photo, or =null=.
 An =errors= array is added when a photo could not be tagged, listing the file and the reason.
+
+* Location
+Photos are usually tagged one album at a time, and an album is usually shot in one place: a city, an island or a single site.
+=--location= describes that place for the whole run and is treated as a fact.
+Write it from specific to general and end with the country, so that every level a buyer might search is available:
+
+| Album         | =--location=                      |
+|---------------+-----------------------------------|
+| Whole city    | ="Lisbon, Portugal"=              |
+| Island        | ="Madeira, Portugal"=             |
+| Specific site | ="Pena Palace, Sintra, Portugal"= |
+
+For every photo the model:
+- names a more specific place in =detected= only when a landmark, building, site or natural feature within the given location is clearly visible and unmistakable, and leaves it =null= for generic scenes or whenever it is not certain;
+- never contradicts the given location, which is always kept unchanged in =given=;
+- adds the place names after the subject keywords, at most four location keywords in total;
+- names the place in the title only when the place itself is the subject, such as a landmark, cityscape or landscape.
+
+With =--no-location= no place names are used.
+The location applies to every photo of the run, so photos from a day trip elsewhere belong in a separate run with their own location.
 
 * Export Formats
 ** adobe-stock

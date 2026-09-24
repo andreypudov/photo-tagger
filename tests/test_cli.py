@@ -11,7 +11,14 @@ import httpx2
 from openai import AuthenticationError, NotFoundError
 from PIL import Image
 
-from photo_tagger import __version__, build_parser, run, validate_args
+from photo_tagger import (
+    __version__,
+    build_parser,
+    main,
+    normalize_location,
+    run,
+    validate_args,
+)
 from tagger.categories import (
     ADOBE_STOCK,
     ADOBE_STOCK_CATEGORIES,
@@ -116,77 +123,130 @@ VALID_CONTENT = json.dumps(
 
 CATEGORY_CONTENT = {"title": "t", "description": "d", "keywords": ["k"]}
 
+MADEIRA = "Madeira, Portugal"
+
+
+def parse_args(*argv, target=STOCK, output="out.json", location=None):
+    """Parse tagging arguments with every required flag already filled in."""
+    required = ["-t", target, "-o", output]
+    required += ["-l", location] if location else ["--no-location"]
+    return build_parser().parse_args([*required, *argv])
+
+
+def assert_usage_error(test, argv) -> str:
+    """Assert that argparse rejects the arguments and return its message."""
+    stderr = StringIO()
+    with redirect_stderr(stderr), test.assertRaises(SystemExit) as ctx:
+        build_parser().parse_args(argv)
+    test.assertEqual(ctx.exception.code, 2)
+    return stderr.getvalue()
+
 
 class ParserTests(unittest.TestCase):
     def test_parser_accepts_multiple_files(self):
-        parser = build_parser()
-        args = parser.parse_args(["a.jpg", "b.png", "c.tif"])
+        args = parse_args("a.jpg", "b.png", "c.tif")
 
         self.assertEqual(args.files, ["a.jpg", "b.png", "c.tif"])
 
-    def test_target_defaults_to_stock(self):
-        parser = build_parser()
-        args = parser.parse_args(["a.jpg"])
-
-        self.assertEqual(args.target, STOCK)
-
-    def test_gallery_target_is_accepted(self):
-        parser = build_parser()
-        args = parser.parse_args(["--target", "gallery", "a.jpg"])
+    def test_required_flags_are_parsed(self):
+        args = build_parser().parse_args(
+            ["-t", "gallery", "-o", "labels.json", "-l", MADEIRA, "a.jpg"]
+        )
 
         self.assertEqual(args.target, GALLERY)
+        self.assertEqual(args.output, "labels.json")
+        self.assertEqual(args.location, MADEIRA)
+        self.assertFalse(args.no_location)
+
+    def test_long_flags_are_accepted(self):
+        args = build_parser().parse_args(
+            ["--target", "stock", "--output", "-", "--no-location", "a.jpg"]
+        )
+
+        self.assertEqual(args.target, STOCK)
+        self.assertEqual(args.output, "-")
+        self.assertIsNone(args.location)
+        self.assertTrue(args.no_location)
+
+    def test_target_is_required(self):
+        message = assert_usage_error(self, ["-o", "out.json", "--no-location", "a.jpg"])
+
+        self.assertIn("--target", message)
+
+    def test_output_is_required(self):
+        message = assert_usage_error(self, ["-t", "stock", "--no-location", "a.jpg"])
+
+        self.assertIn("--output", message)
+
+    def test_location_or_no_location_is_required(self):
+        message = assert_usage_error(self, ["-t", "stock", "-o", "out.json", "a.jpg"])
+
+        self.assertIn("--location", message)
+        self.assertIn("--no-location", message)
+
+    def test_location_and_no_location_are_exclusive(self):
+        message = assert_usage_error(
+            self,
+            ["-t", "stock", "-o", "o.json", "-l", MADEIRA, "--no-location", "a.jpg"],
+        )
+
+        self.assertIn("not allowed with", message)
+
+    def test_files_are_required(self):
+        assert_usage_error(self, ["-t", "stock", "-o", "out.json", "--no-location"])
 
     def test_unknown_target_is_rejected(self):
-        parser = build_parser()
-        with redirect_stderr(StringIO()), self.assertRaises(SystemExit):
-            parser.parse_args(["--target", "postcard", "a.jpg"])
+        assert_usage_error(
+            self, ["-t", "postcard", "-o", "out.json", "--no-location", "a.jpg"]
+        )
 
-    def test_output_defaults_to_tags_json(self):
-        parser = build_parser()
-        args = parser.parse_args(["a.jpg"])
+    def test_force_defaults_to_false(self):
+        self.assertFalse(parse_args("a.jpg").force)
+        self.assertTrue(parse_args("--force", "a.jpg").force)
 
-        self.assertEqual(args.output, "tags.json")
+    def test_help_lists_required_arguments_separately(self):
+        stdout = StringIO()
+        with redirect_stdout(stdout), self.assertRaises(SystemExit):
+            build_parser().parse_args(["--help"])
+
+        help_text = stdout.getvalue()
+        required = help_text[help_text.index("required arguments:") :]
+        for flag in ("--target", "--output", "--location", "--no-location"):
+            self.assertIn(flag, required)
+        self.assertNotIn("--model", required)
 
     def test_version_flag_is_available(self):
-        parser = build_parser()
-        with redirect_stdout(StringIO()), self.assertRaises(SystemExit):
-            parser.parse_args(["--version"])
+        stdout = StringIO()
+        with redirect_stdout(stdout), self.assertRaises(SystemExit):
+            build_parser().parse_args(["--version"])
+
+        self.assertIn(__version__, stdout.getvalue())
 
     @patch.dict(os.environ, {"PHOTO_TAGGER_MODEL": ""}, clear=False)
     def test_model_defaults_to_builtin_model(self):
-        args = build_parser().parse_args(["a.jpg"])
-
-        self.assertEqual(args.model, DEFAULT_MODEL)
+        self.assertEqual(parse_args("a.jpg").model, DEFAULT_MODEL)
 
     @patch.dict(os.environ, {"PHOTO_TAGGER_MODEL": "gpt-custom"}, clear=False)
     def test_model_default_is_read_from_environment(self):
-        args = build_parser().parse_args(["a.jpg"])
-
-        self.assertEqual(args.model, "gpt-custom")
+        self.assertEqual(parse_args("a.jpg").model, "gpt-custom")
 
     @patch.dict(os.environ, {"PHOTO_TAGGER_MODEL": "gpt-custom"}, clear=False)
     def test_model_flag_overrides_environment(self):
-        args = build_parser().parse_args(["--model", "gpt-flag", "a.jpg"])
-
-        self.assertEqual(args.model, "gpt-flag")
+        self.assertEqual(parse_args("--model", "gpt-flag", "a.jpg").model, "gpt-flag")
 
     def test_detail_defaults_to_high(self):
-        args = build_parser().parse_args(["a.jpg"])
-
-        self.assertEqual(args.detail, "high")
+        self.assertEqual(parse_args("a.jpg").detail, "high")
 
     def test_unknown_detail_is_rejected(self):
-        with redirect_stderr(StringIO()), self.assertRaises(SystemExit):
-            build_parser().parse_args(["--detail", "ultra", "a.jpg"])
-
-    def test_parser_reports_version(self):
-        self.assertTrue(__version__)
+        assert_usage_error(
+            self,
+            ["-t", "stock", "-o", "o.json", "--no-location", "--detail", "ultra", "a"],
+        )
 
 
 class ArgumentValidationTests(unittest.TestCase):
     def _args(self, **overrides):
-        parser = build_parser()
-        args = parser.parse_args(["a.jpg"])
+        args = parse_args("a.jpg")
         for name, value in overrides.items():
             setattr(args, name, value)
         return args
@@ -215,6 +275,15 @@ class ArgumentValidationTests(unittest.TestCase):
         with self.assertRaises(ValueError) as ctx:
             validate_args(self._args(model=" "))
         self.assertIn("--model", str(ctx.exception))
+
+    def test_blank_location_is_rejected(self):
+        with self.assertRaises(ValueError) as ctx:
+            validate_args(self._args(location="   "))
+        self.assertIn("--location", str(ctx.exception))
+
+    def test_location_whitespace_is_collapsed(self):
+        self.assertEqual(normalize_location("  Madeira,\n  Portugal "), MADEIRA)
+        self.assertIsNone(normalize_location(None))
 
     def test_valid_arguments_pass(self):
         # Should not raise
@@ -298,6 +367,51 @@ class PromptTests(unittest.TestCase):
         schema = build_response_schema(STOCK_PROFILE)["schema"]
 
         self.assertEqual(schema["required"], ["title", "description", "keywords"])
+
+    def test_system_prompt_states_the_location_rules(self):
+        prompt = build_system_prompt(STOCK_PROFILE, CATEGORY_SETS, MADEIRA)
+
+        self.assertIn("taken in Madeira, Portugal", prompt)
+        self.assertIn("never contradict", prompt)
+        self.assertIn("specific_place", prompt)
+        self.assertIn("at most four location keywords", prompt)
+
+    def test_system_prompt_without_location_has_no_location_rules(self):
+        prompt = build_system_prompt(STOCK_PROFILE, CATEGORY_SETS)
+
+        self.assertNotIn("Location:", prompt)
+        self.assertNotIn("specific_place", prompt)
+
+    def test_user_prompt_asks_for_the_specific_place_with_a_location(self):
+        photo = make_photo()
+
+        self.assertIn(
+            "and the specific place",
+            build_user_prompt(photo, STOCK_PROFILE, CATEGORY_SETS, MADEIRA),
+        )
+        self.assertIn(
+            "a title, a description, keywords and categories",
+            build_user_prompt(photo, STOCK_PROFILE, CATEGORY_SETS),
+        )
+        self.assertIn(
+            "a title, a description and keywords",
+            build_user_prompt(photo, STOCK_PROFILE),
+        )
+
+    def test_schema_requires_a_nullable_specific_place_with_a_location(self):
+        schema = build_response_schema(STOCK_PROFILE, CATEGORY_SETS, MADEIRA)["schema"]
+
+        self.assertIn("specific_place", schema["required"])
+        self.assertEqual(
+            schema["properties"]["specific_place"]["type"], ["string", "null"]
+        )
+        self.assertIn(MADEIRA, schema["properties"]["specific_place"]["description"])
+        self.assertEqual(set(schema["required"]), set(schema["properties"]))
+
+    def test_schema_without_location_has_no_specific_place(self):
+        schema = build_response_schema(STOCK_PROFILE, CATEGORY_SETS)["schema"]
+
+        self.assertNotIn("specific_place", schema["properties"])
 
     def test_user_prompt_includes_exif_context(self):
         photo = make_photo(exif={"Model": "Leica M11", "FNumber": "f/2"})
@@ -384,6 +498,53 @@ class MetadataNormalizationTests(unittest.TestCase):
 
         self.assertNotIn("categories", normalize_metadata(raw, STOCK_PROFILE))
 
+    def test_normalize_metadata_keeps_the_given_and_detected_place(self):
+        raw = {**CATEGORY_CONTENT, "specific_place": "  Porto   Moniz "}
+
+        metadata = normalize_metadata(raw, STOCK_PROFILE, location=MADEIRA)
+
+        self.assertEqual(
+            metadata["location"], {"given": MADEIRA, "detected": "Porto Moniz"}
+        )
+
+    def test_normalize_metadata_accepts_no_specific_place(self):
+        for place in (None, "", "   "):
+            raw = {**CATEGORY_CONTENT, "specific_place": place}
+            with self.subTest(place=place):
+                metadata = normalize_metadata(raw, STOCK_PROFILE, location=MADEIRA)
+                self.assertEqual(
+                    metadata["location"], {"given": MADEIRA, "detected": None}
+                )
+
+    def test_normalize_metadata_drops_a_repeat_of_the_given_location(self):
+        for place in ("Madeira", "portugal", "Madeira, Portugal", "MADEIRA,  Portugal"):
+            raw = {**CATEGORY_CONTENT, "specific_place": place}
+            with self.subTest(place=place):
+                metadata = normalize_metadata(raw, STOCK_PROFILE, location=MADEIRA)
+                self.assertIsNone(metadata["location"]["detected"])
+
+    def test_normalize_metadata_limits_the_specific_place_length(self):
+        raw = {**CATEGORY_CONTENT, "specific_place": "Very long place " * 20}
+
+        metadata = normalize_metadata(raw, STOCK_PROFILE, location=MADEIRA)
+
+        self.assertLessEqual(len(metadata["location"]["detected"]), 100)
+
+    def test_normalize_metadata_rejects_an_invalid_specific_place(self):
+        for raw in (
+            CATEGORY_CONTENT,
+            {**CATEGORY_CONTENT, "specific_place": 42},
+            {**CATEGORY_CONTENT, "specific_place": ["Porto Moniz"]},
+        ):
+            with self.subTest(raw=raw), self.assertRaises(ValueError) as ctx:
+                normalize_metadata(raw, STOCK_PROFILE, location=MADEIRA)
+            self.assertIn("specific place", str(ctx.exception))
+
+    def test_normalize_metadata_without_location_has_no_location(self):
+        raw = {**CATEGORY_CONTENT, "specific_place": "Porto Moniz"}
+
+        self.assertNotIn("location", normalize_metadata(raw, STOCK_PROFILE))
+
     def test_normalize_metadata_requires_keywords(self):
         with self.assertRaises(ValueError) as ctx:
             normalize_metadata(
@@ -449,6 +610,34 @@ class MetadataGeneratorTests(unittest.TestCase):
         with self.assertRaises(ValueError) as ctx:
             generator.generate(make_photo(), STOCK_PROFILE)
         self.assertIn("category", str(ctx.exception))
+
+    def test_generate_sends_and_returns_the_location(self):
+        content = json.dumps(
+            {**json.loads(VALID_CONTENT), "specific_place": "Pico do Arieiro"}
+        )
+        client = FakeClient(response=make_completion(content))
+        generator = MetadataGenerator(location=MADEIRA, client=client)
+
+        metadata = generator.generate(make_photo(), STOCK_PROFILE)
+
+        self.assertEqual(
+            metadata["location"], {"given": MADEIRA, "detected": "Pico do Arieiro"}
+        )
+        self.assertEqual(metadata["categories"], {ADOBE_STOCK: 11})
+        request = client.requests[0]
+        self.assertIn("taken in Madeira, Portugal", request["messages"][0]["content"])
+        schema = request["response_format"]["json_schema"]["schema"]
+        self.assertIn("specific_place", schema["required"])
+
+    def test_generate_without_location_does_not_ask_for_a_place(self):
+        client = FakeClient(response=make_completion(VALID_CONTENT))
+        generator = MetadataGenerator(client=client)
+
+        metadata = generator.generate(make_photo(), STOCK_PROFILE)
+
+        self.assertNotIn("location", metadata)
+        request = client.requests[0]
+        self.assertNotIn("Location:", request["messages"][0]["content"])
 
     def test_refusal_is_reported(self):
         client = FakeClient(response=make_completion(refusal="cannot help"))
@@ -741,6 +930,25 @@ class DocumentTests(unittest.TestCase):
 
         self.assertEqual(document["photos"][0]["categories"], {ADOBE_STOCK: 7})
 
+    def test_document_stores_the_location(self):
+        location = {"given": MADEIRA, "detected": None}
+        generator = FakeGenerator(
+            metadata={
+                "title": "t",
+                "description": "d",
+                "keywords": ["k"],
+                "location": location,
+            }
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = write_test_image(os.path.join(directory, "sample.jpg"))
+            results = tag_photos([path], STOCK_PROFILE, generator)
+
+        document = build_document(results, STOCK_PROFILE, "test-model")
+
+        self.assertEqual(document["photos"][0]["location"], location)
+        self.assertNotIn("categories", document["photos"][0])
+
     def test_write_text_keeps_line_endings(self):
         with tempfile.TemporaryDirectory() as directory:
             path = os.path.join(directory, "rows.csv")
@@ -775,37 +983,120 @@ class DocumentTests(unittest.TestCase):
 
 
 class RunTests(unittest.TestCase):
-    def _run(self, argv, generator):
-        args = build_parser().parse_args(argv)
-        with patch("photo_tagger.MetadataGenerator", return_value=generator):
-            return run(args)
+    def setUp(self):
+        self._directory = tempfile.TemporaryDirectory()
+        self.directory = self._directory.name
+        self.photo = write_test_image(os.path.join(self.directory, "sample.jpg"))
+        self.output = os.path.join(self.directory, "tags.json")
+
+    def tearDown(self):
+        self._directory.cleanup()
+
+    def _run(self, args, generator=None):
+        """Run a parsed tagging command against a fake generator."""
+        generator = generator or FakeGenerator()
+        with patch("photo_tagger.MetadataGenerator", return_value=generator) as factory:
+            code = run(args)
+        return code, factory, generator
+
+    def _read_output(self) -> dict:
+        with open(self.output, encoding="utf-8") as handle:
+            return json.load(handle)
 
     def test_run_writes_the_requested_target(self):
-        with tempfile.TemporaryDirectory() as directory:
-            photo = write_test_image(os.path.join(directory, "sample.jpg"))
-            output = os.path.join(directory, "labels.json")
+        args = parse_args(self.photo, "-q", target=GALLERY, output=self.output)
 
-            code = self._run(
-                [photo, "--target", "gallery", "-o", output, "--quiet"],
-                FakeGenerator(),
-            )
+        code, _, _ = self._run(args)
 
-            self.assertEqual(code, 0)
-            with open(output, encoding="utf-8") as handle:
-                document = json.load(handle)
-            self.assertEqual(document["target"], GALLERY)
-            self.assertEqual(len(document["photos"]), 1)
+        self.assertEqual(code, 0)
+        document = self._read_output()
+        self.assertEqual(document["target"], GALLERY)
+        self.assertEqual(len(document["photos"]), 1)
+
+    def test_run_passes_the_location_to_the_generator(self):
+        args = parse_args(
+            self.photo, "-q", output=self.output, location=" Madeira,  Portugal "
+        )
+
+        code, factory, _ = self._run(args)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(factory.call_args.kwargs["location"], MADEIRA)
+
+    def test_run_with_no_location_passes_none(self):
+        args = parse_args(self.photo, "-q", output=self.output)
+
+        _, factory, _ = self._run(args)
+
+        self.assertIsNone(factory.call_args.kwargs["location"])
+
+    def test_run_refuses_to_replace_an_existing_output(self):
+        with open(self.output, "w", encoding="utf-8") as handle:
+            handle.write("previous album")
+        args = parse_args(self.photo, "-q", output=self.output)
+
+        with self.assertRaises(ValueError) as ctx:
+            self._run(args)
+
+        self.assertIn("--force", str(ctx.exception))
+        with open(self.output, encoding="utf-8") as handle:
+            self.assertEqual(handle.read(), "previous album")
+
+    def test_existing_output_is_checked_before_any_api_call(self):
+        with open(self.output, "w", encoding="utf-8") as handle:
+            handle.write("previous album")
+        args = parse_args(self.photo, "-q", output=self.output)
+        generator = FakeGenerator()
+
+        with self.assertRaises(ValueError):
+            self._run(args, generator)
+
+        self.assertEqual(generator.calls, [])
+
+    def test_force_replaces_an_existing_output(self):
+        with open(self.output, "w", encoding="utf-8") as handle:
+            handle.write("previous album")
+        args = parse_args(self.photo, "--force", "-q", output=self.output)
+
+        code, _, _ = self._run(args)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(len(self._read_output()["photos"]), 1)
+
+    def test_directory_output_is_rejected_even_with_force(self):
+        args = parse_args(self.photo, "--force", "-q", output=self.directory)
+
+        with self.assertRaises(ValueError) as ctx:
+            self._run(args)
+        self.assertIn("directory", str(ctx.exception))
+
+    def test_standard_output_needs_no_force(self):
+        args = parse_args(self.photo, "-q", output="-")
+        stdout = StringIO()
+
+        with redirect_stdout(stdout):
+            code, _, _ = self._run(args)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(len(json.loads(stdout.getvalue())["photos"]), 1)
+
+    def test_main_reports_an_existing_output_with_exit_code_2(self):
+        with open(self.output, "w", encoding="utf-8") as handle:
+            handle.write("previous album")
+        stderr = StringIO()
+
+        with redirect_stderr(stderr):
+            code = main(["-t", "stock", "-o", self.output, "--no-location", self.photo])
+
+        self.assertEqual(code, 2)
+        self.assertIn("already exists", stderr.getvalue())
 
     def test_run_reports_failure_exit_code(self):
-        with tempfile.TemporaryDirectory() as directory:
-            output = os.path.join(directory, "tags.json")
+        args = parse_args("missing.jpg", "-q", output=self.output)
 
-            code = self._run(
-                ["missing.jpg", "-o", output, "--quiet"],
-                FakeGenerator(),
-            )
+        code, _, _ = self._run(args)
 
-            self.assertEqual(code, 1)
+        self.assertEqual(code, 1)
 
 
 if __name__ == "__main__":

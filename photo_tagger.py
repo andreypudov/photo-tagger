@@ -1,4 +1,5 @@
 import argparse
+import os
 import sys
 
 from tagger.image_loader import DEFAULT_MAX_DIMENSION
@@ -13,11 +14,9 @@ from tagger.openai_client import (
 )
 from tagger.output import STDOUT_PATH, build_document, print_summary, write_document
 from tagger.tagging import DEFAULT_JOBS, collect_photo_paths, tag_photos
-from tagger.targets import STOCK, TARGET_NAMES, get_profile
+from tagger.targets import TARGET_NAMES, get_profile
 
 __version__ = "0.1.0"
-
-DEFAULT_OUTPUT = "tags.json"
 
 
 def build_parser():
@@ -25,9 +24,9 @@ def build_parser():
         description="Generate titles, descriptions and keywords for photos "
         "using the OpenAI API.",
         epilog="Examples:\n"
-        "  %(prog)s photo.jpg\n"
-        "  %(prog)s --target gallery portrait.jpg landscape.tif -o labels.json\n"
-        "  %(prog)s --target stock ./shoot -o stock.json",
+        '  %(prog)s -t stock -l "Madeira, Portugal" -o madeira.json ./madeira\n'
+        "  %(prog)s -t gallery --no-location -o studio.json portrait.jpg still.tif\n"
+        "  %(prog)s -t stock --no-location -o - photo.jpg",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
@@ -36,21 +35,37 @@ def build_parser():
         metavar="FILE",
         help="Photos to tag, or directories containing photos",
     )
-    parser.add_argument(
+    required = parser.add_argument_group("required arguments")
+    required.add_argument(
         "-t",
         "--target",
         choices=TARGET_NAMES,
-        default=STOCK,
+        required=True,
         help="Metadata style to follow: 'stock' for microstock listings, "
-        "'gallery' for museum and exhibition wall labels (default: %(default)s)",
+        "'gallery' for museum and exhibition wall labels",
     )
-    parser.add_argument(
+    required.add_argument(
         "-o",
         "--output",
         metavar="PATH",
-        default=DEFAULT_OUTPUT,
-        help=f"JSON file to write, or '{STDOUT_PATH}' for standard output "
-        "(default: %(default)s)",
+        required=True,
+        help=f"JSON file to write, or '{STDOUT_PATH}' for standard output; "
+        "an existing file is only replaced with --force",
+    )
+    location = required.add_mutually_exclusive_group(required=True)
+    location.add_argument(
+        "-l",
+        "--location",
+        metavar="PLACE",
+        help="Where the whole photo set was taken, from specific to general, "
+        "e.g. 'Lisbon, Portugal'; the model may name a recognizable place "
+        "within it",
+    )
+    location.add_argument(
+        "--no-location",
+        action="store_true",
+        help="The photo set has no meaningful location, such as studio or "
+        "product shots; no place names are used",
     )
     parser.add_argument(
         "-m",
@@ -114,6 +129,11 @@ def build_parser():
         help="Indentation of the generated JSON (default: %(default)s)",
     )
     parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Replace the output file if it already exists",
+    )
+    parser.add_argument(
         "-q",
         "--quiet",
         action="store_true",
@@ -155,6 +175,43 @@ def validate_args(args) -> None:
     if args.indent < 0:
         raise ValueError("--indent cannot be negative")
 
+    if args.location is not None and not args.location.strip():
+        raise ValueError("--location cannot be empty")
+
+
+def check_output(path: str, force: bool) -> None:
+    """Refuse to replace an existing tagging document unless forced.
+
+    The document is the result of paid API calls, so it is checked before
+    any photo is sent.
+
+    Args:
+        path: Output path given on the command line
+        force: Whether an existing file may be replaced
+
+    Raises:
+        ValueError: If the file exists and force is not set, or the path is
+            a directory
+    """
+    if path == STDOUT_PATH:
+        return
+
+    if os.path.isdir(path):
+        raise ValueError(f"Output path is a directory: {path}")
+
+    if os.path.exists(path) and not force:
+        raise ValueError(
+            f"Output file already exists: {path}. "
+            "Use --force to replace it or choose another --output."
+        )
+
+
+def normalize_location(location: str | None) -> str | None:
+    """Collapse whitespace in the --location value, None when not given."""
+    if location is None:
+        return None
+    return " ".join(location.split())
+
 
 def build_progress_reporter(quiet: bool):
     """Return a progress callback, or None when running quietly."""
@@ -180,6 +237,7 @@ def run(args) -> int:
         The process exit code
     """
     validate_args(args)
+    check_output(args.output, args.force)
 
     profile = get_profile(args.target)
     paths = collect_photo_paths(args.files)
@@ -190,6 +248,7 @@ def run(args) -> int:
         timeout=args.timeout,
         max_retries=args.retries,
         detail=args.detail,
+        location=normalize_location(args.location),
     )
 
     results = tag_photos(

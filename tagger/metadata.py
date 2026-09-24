@@ -1,7 +1,9 @@
 from .categories import CategorySet
+from .prompts import SPECIFIC_PLACE_FIELD
 from .targets import TargetProfile
 
 ELLIPSIS = "..."
+SPECIFIC_PLACE_MAX_CHARS = 100
 
 
 def truncate_text(text: str, limit: int) -> str:
@@ -91,10 +93,45 @@ def normalize_category(raw: dict, category_set: CategorySet) -> int:
     return category
 
 
+def normalize_specific_place(raw: dict, location: str) -> str | None:
+    """Return the specific place the model recognized, or None.
+
+    Args:
+        raw: Parsed JSON payload returned by the model
+        location: Place where the whole photo set was taken
+
+    Returns:
+        The cleaned place name, or None when the model named none or only
+        repeated a part of the given location
+
+    Raises:
+        ValueError: If the field is missing or not a string or null
+    """
+    if SPECIFIC_PLACE_FIELD not in raw:
+        raise ValueError("Model response is missing the specific place")
+
+    place = raw[SPECIFIC_PLACE_FIELD]
+    if place is None:
+        return None
+    if not isinstance(place, str):
+        raise ValueError(f"Model response has an invalid specific place: {place}")
+
+    place = truncate_text(place, SPECIFIC_PLACE_MAX_CHARS)
+    given_parts = {
+        part.strip().casefold() for part in location.split(",") if part.strip()
+    }
+    given_parts.add(" ".join(location.split()).casefold())
+    if not place or place.casefold() in given_parts:
+        return None
+
+    return place
+
+
 def normalize_metadata(
     raw: dict,
     profile: TargetProfile,
     category_sets: tuple[CategorySet, ...] = (),
+    location: str | None = None,
 ) -> dict:
     """Validate and normalize the metadata returned by the model.
 
@@ -102,10 +139,13 @@ def normalize_metadata(
         raw: Parsed JSON payload returned by the model
         profile: Target profile describing the destination
         category_sets: Category lists the model had to choose from
+        location: Place where the whole photo set was taken, if known
 
     Returns:
         A mapping with the title, description and keywords keys, plus a
         categories mapping of set name to code when category sets were given
+        and a location mapping with the given and the detected place when a
+        location was given
 
     Raises:
         ValueError: If a required field is missing or empty
@@ -136,6 +176,12 @@ def normalize_metadata(
         metadata["categories"] = {
             category_set.name: normalize_category(raw, category_set)
             for category_set in category_sets
+        }
+
+    if location:
+        metadata["location"] = {
+            "given": location,
+            "detected": normalize_specific_place(raw, location),
         }
 
     return metadata

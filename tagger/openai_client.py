@@ -65,6 +65,7 @@ def build_messages(
     profile: TargetProfile,
     detail: str = DEFAULT_DETAIL,
     category_sets: tuple[CategorySet, ...] = (),
+    location: str | None = None,
 ) -> list[dict]:
     """Build the chat messages describing a single photo.
 
@@ -73,18 +74,22 @@ def build_messages(
         profile: Target profile describing the destination
         detail: Image detail level requested from the model
         category_sets: Category lists the model has to choose from
+        location: Place where the whole photo set was taken, if known
 
     Returns:
         A list of chat messages ready to be sent to the model
     """
     return [
-        {"role": "system", "content": build_system_prompt(profile, category_sets)},
+        {
+            "role": "system",
+            "content": build_system_prompt(profile, category_sets, location),
+        },
         {
             "role": "user",
             "content": [
                 {
                     "type": "text",
-                    "text": build_user_prompt(photo, profile, category_sets),
+                    "text": build_user_prompt(photo, profile, category_sets, location),
                 },
                 {
                     "type": "image_url",
@@ -99,6 +104,7 @@ def parse_response_content(
     content: str | None,
     profile: TargetProfile,
     category_sets: tuple[CategorySet, ...] = (),
+    location: str | None = None,
 ) -> dict:
     """Parse and normalize the JSON payload returned by the model.
 
@@ -106,6 +112,7 @@ def parse_response_content(
         content: Raw message content returned by the model
         profile: Target profile describing the destination
         category_sets: Category lists the model had to choose from
+        location: Place where the whole photo set was taken, if known
 
     Returns:
         Normalized metadata with title, description and keywords
@@ -121,7 +128,7 @@ def parse_response_content(
     except json.JSONDecodeError as e:
         raise ValueError(f"Model returned malformed JSON: {e}") from e
 
-    return normalize_metadata(payload, profile, category_sets)
+    return normalize_metadata(payload, profile, category_sets, location)
 
 
 class MetadataGenerator:
@@ -135,6 +142,7 @@ class MetadataGenerator:
         max_retries: int = DEFAULT_MAX_RETRIES,
         detail: str = DEFAULT_DETAIL,
         category_sets: tuple[CategorySet, ...] = CATEGORY_SETS,
+        location: str | None = None,
         client=None,
     ):
         """Create a generator.
@@ -147,6 +155,9 @@ class MetadataGenerator:
             detail: Image detail level, one of "low", "high" or "auto"
             category_sets: Category lists the model picks from for every
                 photo, by default every list an export format needs
+            location: Place where the whole photo set was taken, as given by
+                the photographer; the model may name a more specific place
+                within it
             client: Pre-built OpenAI client, mainly used by the tests
 
         Raises:
@@ -155,6 +166,7 @@ class MetadataGenerator:
         self.model = model
         self.detail = detail
         self.category_sets = category_sets
+        self.location = location
         self._client = client or OpenAI(
             api_key=resolve_api_key(api_key),
             timeout=timeout,
@@ -180,11 +192,13 @@ class MetadataGenerator:
             response = self._client.chat.completions.create(
                 model=self.model,
                 messages=build_messages(
-                    photo, profile, self.detail, self.category_sets
+                    photo, profile, self.detail, self.category_sets, self.location
                 ),
                 response_format={
                     "type": "json_schema",
-                    "json_schema": build_response_schema(profile, self.category_sets),
+                    "json_schema": build_response_schema(
+                        profile, self.category_sets, self.location
+                    ),
                 },
             )
         except AuthenticationError as e:
@@ -227,5 +241,5 @@ class MetadataGenerator:
             raise ValueError(f"Model response for {photo.filename} was cut short")
 
         return parse_response_content(
-            choice.message.content, profile, self.category_sets
+            choice.message.content, profile, self.category_sets, self.location
         )

@@ -5,14 +5,20 @@ from .targets import TargetProfile
 SCHEMA_NAME = "photo_metadata"
 
 
+SPECIFIC_PLACE_FIELD = "specific_place"
+
+
 def build_system_prompt(
-    profile: TargetProfile, category_sets: tuple[CategorySet, ...] = ()
+    profile: TargetProfile,
+    category_sets: tuple[CategorySet, ...] = (),
+    location: str | None = None,
 ) -> str:
     """Build the system prompt that defines the voice for a target.
 
     Args:
         profile: Target profile describing the destination
         category_sets: Category lists the model has to choose from
+        location: Place where the whole photo set was taken, if known
 
     Returns:
         The system prompt text
@@ -48,13 +54,48 @@ def build_system_prompt(
             f"{choices}"
         )
 
+    if location:
+        prompt += "\n\n" + build_location_rules(location)
+
     return prompt
+
+
+def build_location_rules(location: str) -> str:
+    """Build the prompt section describing the location of the photo set.
+
+    Args:
+        location: Place where the whole photo set was taken, as given by the
+            photographer
+
+    Returns:
+        The prompt text
+    """
+    return (
+        "Location:\n"
+        f"Every photograph in this set was taken in {location}. The "
+        "photographer confirmed this; treat it as a fact and never contradict "
+        "it.\n"
+        f"- Set {SPECIFIC_PLACE_FIELD} to the name of a specific landmark, "
+        "building, site or natural feature only when it is clearly visible, "
+        "unmistakable and lies within this location. Use its common English "
+        "name without repeating the given location.\n"
+        f"- Set {SPECIFIC_PLACE_FIELD} to null for generic scenes such as a "
+        "street, a beach, a café or a close-up, whenever you are not certain, "
+        "and when the photograph appears to be from somewhere else.\n"
+        "- Name the place in the title only when the place itself is the "
+        "subject, such as a landmark, cityscape or landscape. The description "
+        "may mention it where it reads naturally.\n"
+        "- After the subject keywords, add the specific place when there is "
+        "one and the place names of the given location, at most four location "
+        "keywords in total."
+    )
 
 
 def build_user_prompt(
     photo: Photo,
     profile: TargetProfile,
     category_sets: tuple[CategorySet, ...] = (),
+    location: str | None = None,
 ) -> str:
     """Build the per-photo instruction sent alongside the image.
 
@@ -62,17 +103,20 @@ def build_user_prompt(
         photo: The prepared photo
         profile: Target profile describing the destination
         category_sets: Category lists the model has to choose from
+        location: Place where the whole photo set was taken, if known
 
     Returns:
         The user prompt text
     """
-    fields = (
-        "a title, a description, keywords and categories"
-        if category_sets
-        else "a title, a description and keywords"
-    )
+    fields = ["a title", "a description", "keywords"]
+    if category_sets:
+        fields.append("categories")
+    if location:
+        fields.append("the specific place")
+    requested = ", ".join(fields[:-1]) + " and " + fields[-1]
+
     lines = [
-        f"Generate {fields} for this photograph for the {profile.name} target.",
+        f"Generate {requested} for this photograph for the {profile.name} target.",
         "",
         "Technical context (use it only when it genuinely informs the text, "
         "never quote it verbatim):",
@@ -104,13 +148,16 @@ def describe_orientation(width: int, height: int) -> str | None:
 
 
 def build_response_schema(
-    profile: TargetProfile, category_sets: tuple[CategorySet, ...] = ()
+    profile: TargetProfile,
+    category_sets: tuple[CategorySet, ...] = (),
+    location: str | None = None,
 ) -> dict:
     """Build the strict JSON schema requested from the model.
 
     Args:
         profile: Target profile describing the destination
         category_sets: Category lists the model has to choose from
+        location: Place where the whole photo set was taken, if known
 
     Returns:
         A JSON schema definition compatible with structured outputs
@@ -147,6 +194,16 @@ def build_response_schema(
             "enum": list(category_set.choices),
         }
         required.append(category_set.field)
+
+    if location:
+        properties[SPECIFIC_PLACE_FIELD] = {
+            "type": ["string", "null"],
+            "description": (
+                "Name of a clearly recognizable landmark, site or natural "
+                f"feature within {location}, or null when not certain"
+            ),
+        }
+        required.append(SPECIFIC_PLACE_FIELD)
 
     return {
         "name": SCHEMA_NAME,

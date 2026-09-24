@@ -1,9 +1,7 @@
 import argparse
-import os
 import sys
 
 from tagger.export import (
-    ADOBE_STOCK,
     FORMAT_NAMES,
     FORMATS,
     find_category,
@@ -18,11 +16,11 @@ __version__ = "0.1.0"
 
 def build_parser():
     parser = argparse.ArgumentParser(
-        description="Convert a JSON document written by photo_tagger.py into "
-        "the metadata file a destination expects, without calling the API again.",
+        description="Convert a JSON document written by photo_tagger.py into the\n"
+        "metadata file a destination expects, without calling the API again.",
         epilog="Examples:\n"
-        "  %(prog)s tags.json\n"
-        "  %(prog)s --format adobe-stock tags.json -o adobe.csv",
+        "  %(prog)s -f adobe-stock -o madeira.csv madeira.json\n"
+        "  %(prog)s -f adobe-stock -o - madeira.json",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
@@ -30,22 +28,22 @@ def build_parser():
         metavar="TAGS_JSON",
         help="JSON document written by photo_tagger.py",
     )
-    parser.add_argument(
+    required = parser.add_argument_group("required arguments")
+    required.add_argument(
         "-f",
         "--format",
         choices=FORMAT_NAMES,
-        default=ADOBE_STOCK,
+        required=True,
         help="Format to write: "
-        + ", ".join(f"'{name}' for the {fmt.summary}" for name, fmt in FORMATS.items())
-        + " (default: %(default)s)",
+        + ", ".join(f"'{name}' for the {fmt.summary}" for name, fmt in FORMATS.items()),
     )
-    parser.add_argument(
+    required.add_argument(
         "-o",
         "--output",
         metavar="PATH",
-        default=None,
-        help=f"File to write, or '{STDOUT_PATH}' for standard output "
-        "(default: next to the input, e.g. tags.adobe-stock.csv)",
+        required=True,
+        help=f"File to write, or '{STDOUT_PATH}' for standard output; "
+        "an existing file is replaced",
     )
     parser.add_argument(
         "-q",
@@ -60,20 +58,6 @@ def build_parser():
         version=f"%(prog)s {__version__}",
     )
     return parser
-
-
-def default_output_path(input_path: str, export_format) -> str:
-    """Return the output path derived from the input path and the format.
-
-    Args:
-        input_path: Path to the tagging JSON document
-        export_format: Format being written
-
-    Returns:
-        For tags.json and adobe-stock, tags.adobe-stock.csv in the same folder
-    """
-    root = os.path.splitext(input_path)[0]
-    return f"{root}.{export_format.name}{export_format.extension}"
 
 
 def collect_warnings(document: dict, export_format) -> list[str]:
@@ -132,7 +116,7 @@ def run(args) -> int:
                 f"{', '.join(duplicates)}"
             )
 
-    output = args.output or default_output_path(args.input, export_format)
+    output = args.output
     write_text(export_format.render(photos), output)
 
     if not args.quiet:

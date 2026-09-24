@@ -38,8 +38,9 @@ def build_document(
                 "description": result.metadata["description"],
                 "keywords": result.metadata["keywords"],
             }
-            if "categories" in result.metadata:
-                photo["categories"] = result.metadata["categories"]
+            for extra in ("categories", "location"):
+                if extra in result.metadata:
+                    photo[extra] = result.metadata[extra]
             photos.append(photo)
         else:
             errors.append({"file": result.path, "error": result.error})
