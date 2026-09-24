@@ -209,9 +209,9 @@ class TargetProfileTests(unittest.TestCase):
         self.assertGreaterEqual(STOCK_PROFILE.min_keywords, 25)
         self.assertLessEqual(STOCK_PROFILE.max_keywords, 50)
 
-    def test_gallery_profile_allows_longer_descriptions(self):
+    def test_gallery_profile_keeps_descriptions_short(self):
         self.assertEqual(get_profile(GALLERY), GALLERY_PROFILE)
-        self.assertGreater(
+        self.assertLess(
             GALLERY_PROFILE.description_max_chars,
             STOCK_PROFILE.description_max_chars,
         )
@@ -235,6 +235,8 @@ class PromptTests(unittest.TestCase):
 
         self.assertIn("museum curator", prompt)
         self.assertIn("wall label", prompt)
+        self.assertIn("single sentence of no more than twenty words", prompt)
+        self.assertIn("single exhibition room", prompt)
 
     def test_profiles_produce_different_prompts(self):
         self.assertNotEqual(

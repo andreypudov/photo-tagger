@@ -117,7 +117,8 @@ Titles are literal and name the subject, the action and the setting; description
 
 ** gallery
 Written the way a photograph is presented on display in a museum or an exhibition.
-The title is an artwork title rather than a search phrase, and the description is a curatorial wall text of two or three sentences: what the viewer sees, how the work is composed and lit, and the reading it invites.
+The title is an artwork title rather than a search phrase, and the description is a single sentence of no more than twenty words about the content of the photograph.
+The whole series is imagined hanging in one exhibition room, so each description points to what distinguishes its photograph from the others rather than restating the theme they share.
 Keywords stay curatorial, covering genre, motif and formal qualities.
 
 * Output Format
@@ -133,7 +134,7 @@ The tool writes one JSON document per run:
       "file": "samples/lighthouse.jpg",
       "filename": "lighthouse.jpg",
       "title": "Keeper of the Morning Tide",
-      "description": "A lighthouse holds the edge of a granite headland ...",
+      "description": "A lighthouse stands on a granite headland as the first morning light reaches the rock.",
       "keywords": ["seascape", "solitude", "morning light"]
     }
   ]

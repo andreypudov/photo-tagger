@@ -66,7 +66,7 @@ GALLERY_PROFILE = TargetProfile(
         "photographic print in an exhibition"
     ),
     title_max_chars=60,
-    description_max_chars=600,
+    description_max_chars=160,
     min_keywords=8,
     max_keywords=15,
     guidelines=(
@@ -74,11 +74,14 @@ GALLERY_PROFILE = TargetProfile(
         "concise, and usually a noun phrase without an article.",
         "Do not end the title with a full stop and do not describe the "
         "photographic technique in it.",
-        "The description is a curatorial wall text of two or three sentences "
+        "The description is a single sentence of no more than twenty words, "
         "written in the present tense.",
-        "Open with what the viewer sees, then move to composition, light and "
-        "material qualities, and close with the theme or reading the work "
-        "invites.",
+        "Focus the description on the content of the photograph: the subject, "
+        "what is happening and where, rather than technique, composition or "
+        "interpretation.",
+        "Every photograph in the series hangs together in a single exhibition "
+        "room, so the description names what sets this image apart from its "
+        "neighbours and leaves the shared theme of the series unstated.",
         "Use measured, observational language; avoid sales vocabulary, "
         "superlatives and second person address.",
         "Do not fabricate biographical facts, dates, locations, print sizes "
